@@ -104,17 +104,13 @@ run_hooks() {
   local current=""
   [[ ! -t 0 ]] && current="$(cat)"
 
+  export HARNESS_SESSION="${SESSION_DIR:-}" HARNESS_STAGE="${stage}"
+  export HARNESS_MODEL HARNESS_PROVIDER HARNESS_SYSTEM HARNESS_ROOT
+
   for hook in "${hooks[@]:-}"; do
     [[ -z "${hook}" ]] && continue
     current="$(
-      echo "${current}" | \
-      HARNESS_SESSION="${SESSION_DIR:-}" \
-      HARNESS_STAGE="${stage}" \
-      HARNESS_MODEL="${HARNESS_MODEL}" \
-      HARNESS_PROVIDER="${HARNESS_PROVIDER}" \
-      HARNESS_SYSTEM="${HARNESS_SYSTEM}" \
-      HARNESS_ROOT="${HARNESS_ROOT}" \
-      "${hook}" "${extra_args[@]}" 2>>"${HARNESS_LOG}"
+      echo "${current}" | "${hook}" "${extra_args[@]}" 2>>"${HARNESS_LOG}"
     )"
     local rc=$?
     if (( rc != 0 )); then

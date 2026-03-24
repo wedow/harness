@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# zai — provider plugin for z.ai's Anthropic-compatible API.
+# Receives assembled payload JSON on stdin, outputs the API response.
+set -euo pipefail
+
+ZAI_AUTH_TOKEN="${ZAI_AUTH_TOKEN:?ZAI_AUTH_TOKEN not set}"
+ZAI_API_URL="${ZAI_API_URL:-https://api.z.ai/api/anthropic/v1/messages}"
+ZAI_MAX_TOKENS="${ZAI_MAX_TOKENS:-${ANTHROPIC_MAX_TOKENS:-8192}}"
+
+payload="$(cat)"
+
+model="$(echo "${payload}" | jq -r '.model // ""')"
+[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
+
+system="$(echo "${payload}" | jq -r '.system // ""')"
+messages="$(echo "${payload}" | jq -c '.messages // []')"
+tools="$(echo "${payload}" | jq -c '.tools // []')"
+
+request="$(jq -n \
+  --arg model "${model}" \
+  --argjson max_tokens "${ZAI_MAX_TOKENS}" \
+  --arg system "${system}" \
+  --argjson messages "${messages}" \
+  --argjson tools "${tools}" \
+  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
+   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
+)"
+
+response="$(curl -sS "${ZAI_API_URL}" \
+  -H "x-api-key: ${ZAI_AUTH_TOKEN}" \
+  -H "anthropic-version: 2023-06-01" \
+  -H "content-type: application/json" \
+  -d "${request}" \
+  --max-time 300
+)"
+
+error_type="$(echo "${response}" | jq -r '.type // ""')"
+if [[ "${error_type}" == "error" ]]; then
+  error_msg="$(echo "${response}" | jq -r '.error.message // "unknown error"')"
+  echo "z.ai API error: ${error_msg}" >&2
+  exit 1
+fi
+
+echo "${response}"

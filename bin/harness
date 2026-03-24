@@ -155,6 +155,7 @@ run_hooks() {
     local rc=$?
     if (( rc != 0 )); then
       _log "hook ${hook} exited ${rc} during ${stage}"
+      printf '%s' "${current}"
       return ${rc}
     fi
   done
@@ -297,6 +298,7 @@ _resolve_provider() {
       model) [[ -z "${HARNESS_MODEL}" ]] && HARNESS_MODEL="${val}" ;;
     esac
   done < <("${provider_path}" --defaults 2>/dev/null || true)
+  return 0
 }
 
 # --------------------------------------------------------------------------- #

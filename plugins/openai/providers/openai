@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# openai — provider plugin for OpenAI-compatible chat completions APIs.
+# Works with OpenAI, ollama, llama.cpp, vLLM, and other compatible servers.
+# Receives assembled payload JSON on stdin, outputs the API response.
+set -euo pipefail
+
+[[ "${1:-}" == "--describe" ]] && { echo "OpenAI-compatible chat completions API"; exit 0; }
+[[ "${1:-}" == "--ready" ]] && {
+  # Ready if we have an API key OR a custom URL (local servers don't need keys)
+  [[ -n "${OPENAI_API_KEY:-}" || -n "${OPENAI_API_URL:-}" ]]; exit $?
+}
+[[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-4o"; exit 0; }
+[[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
+OPENAI_API_KEY      API key (required for OpenAI, optional for local servers)
+OPENAI_API_URL      API endpoint (https://api.openai.com/v1/chat/completions)
+OPENAI_MAX_TOKENS   max response tokens (4096)
+ENVEOF
+exit 0; }
+
+OPENAI_API_URL="${OPENAI_API_URL:-https://api.openai.com/v1/chat/completions}"
+OPENAI_MAX_TOKENS="${OPENAI_MAX_TOKENS:-4096}"
+
+payload="$(cat)"
+
+model="$(echo "${payload}" | jq -r '.model // ""')"
+[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
+
+system="$(echo "${payload}" | jq -r '.system // ""')"
+messages="$(echo "${payload}" | jq -c '.messages // []')"
+tools="$(echo "${payload}" | jq -c '.tools // []')"
+
+# Translate tool schemas from canonical (input_schema) to OpenAI format (parameters)
+openai_tools="$(echo "${tools}" | jq -c '[.[] | {
+  type: "function",
+  function: {
+    name: .name,
+    description: .description,
+    parameters: .input_schema
+  }
+}]')"
+
+# Build messages with system message prepended
+openai_messages="$(jq -n \
+  --arg system "${system}" \
+  --argjson msgs "${messages}" \
+  'if ($system | length) > 0
+   then [{role: "system", content: $system}] + $msgs
+   else $msgs end'
+)"
+
+# Build the request body
+request="$(jq -n \
+  --arg model "${model}" \
+  --argjson max_tokens "${OPENAI_MAX_TOKENS}" \
+  --argjson messages "${openai_messages}" \
+  --argjson tools "${openai_tools}" \
+  '{model: $model, max_tokens: $max_tokens, messages: $messages}
+   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
+)"
+
+# Build auth header if API key is set
+auth_args=()
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  auth_args=(-H "Authorization: Bearer ${OPENAI_API_KEY}")
+fi
+
+response="$(curl -sS "${OPENAI_API_URL}" \
+  "${auth_args[@]}" \
+  -H "content-type: application/json" \
+  -d "${request}" \
+  --max-time 300
+)"
+
+# Check for API errors
+error_msg="$(echo "${response}" | jq -r '.error.message // empty' 2>/dev/null)" || true
+if [[ -n "${error_msg}" ]]; then
+  echo "openai API error: ${error_msg}" >&2
+  exit 1
+fi
+
+echo "${response}"

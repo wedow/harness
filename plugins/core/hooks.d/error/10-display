@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# 10-display — surface errors to the user.
+set -euo pipefail
+
+context="$(cat)"
+
+# Try to extract an error message from the context
+msg="$(echo "${context}" | jq -r '.error // empty' 2>/dev/null)" || true
+
+msg="${msg:-hook pipeline failed (check ${HARNESS_LOG})}"
+jq -n --arg msg "${msg}" '{output: ("error: " + $msg)}'

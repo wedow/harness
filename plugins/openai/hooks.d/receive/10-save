@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# 10-save — parse OpenAI chat completion response, save canonical message, return control JSON.
+set -euo pipefail
+
+response="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+mkdir -p "${msg_dir}"
+
+# Extract fields from OpenAI response
+choice="$(echo "${response}" | jq -c '.choices[0] // empty')"
+[[ -z "${choice}" || "${choice}" == "null" ]] && {
+  jq -n '{next_state: "error", error: "no choices in response"}'; exit 0
+}
+
+finish_reason="$(echo "${choice}" | jq -r '.finish_reason // "stop"')"
+message="$(echo "${choice}" | jq -c '.message // {}')"
+content="$(echo "${message}" | jq -r '.content // empty')"
+tool_calls="$(echo "${message}" | jq -c '.tool_calls // empty')"
+model="$(echo "${response}" | jq -r '.model // ""')"
+tokens_in="$(echo "${response}" | jq -r '.usage.prompt_tokens // 0')"
+tokens_out="$(echo "${response}" | jq -r '.usage.completion_tokens // 0')"
+
+# Normalize stop reason to canonical values
+case "${finish_reason}" in
+  stop)       stop="end" ;;
+  tool_calls) stop="tool_calls" ;;
+  length)     stop="length" ;;
+  *)          stop="end" ;;
+esac
+
+# Determine sequence number
+seq=1
+if [[ -d "${msg_dir}" ]]; then
+  last="$(ls -1 "${msg_dir}" 2>/dev/null | sort | tail -1)"
+  if [[ -n "${last}" ]]; then
+    seq=$(( 10#${last%%-*} + 1 ))
+  fi
+fi
+seq_pad="$(printf '%04d' "${seq}")"
+
+# Build the message body
+body=""
+[[ -n "${content}" ]] && body="${content}"
+
+# Process tool calls if present
+items="[]"
+if [[ -n "${tool_calls}" && "${tool_calls}" != "null" && "${tool_calls}" != "[]" ]]; then
+  tc_count="$(echo "${tool_calls}" | jq 'length')"
+  for (( i=0; i<tc_count; i++ )); do
+    tc="$(echo "${tool_calls}" | jq -c ".[$i]")"
+    tc_id="$(echo "${tc}" | jq -r '.id')"
+    tc_name="$(echo "${tc}" | jq -r '.function.name')"
+    tc_args="$(echo "${tc}" | jq -r '.function.arguments')"
+
+    [[ -n "${body}" ]] && body+=$'\n'
+    body+=$'\n```tool_call id='"${tc_id}"' name='"${tc_name}"
+    body+=$'\n'"${tc_args}"
+    body+=$'\n```'
+
+    # Build canonical item for the state machine
+    items="$(echo "${items}" | jq \
+      --arg id "${tc_id}" --arg name "${tc_name}" --argjson input "${tc_args}" \
+      '. + [{id: $id, name: $name, input: $input}]')"
+  done
+fi
+
+# Write the canonical message file
+ts="$(date -Iseconds)"
+cat > "${msg_dir}/${seq_pad}-assistant.md" <<MSGEOF
+---
+role: assistant
+seq: ${seq_pad}
+timestamp: ${ts}
+model: ${model}
+provider: ${HARNESS_PROVIDER}
+stop: ${stop}
+tokens_in: ${tokens_in}
+tokens_out: ${tokens_out}
+---
+${body}
+MSGEOF
+
+# Return control JSON for the state machine
+if [[ "${stop}" == "tool_calls" ]]; then
+  jq -n --argjson items "${items}" '{next_state: "tool_exec", items: $items}'
+else
+  output="${content}"
+  jq -n --arg output "${output}" '{next_state: "done", output: $output}'
+fi

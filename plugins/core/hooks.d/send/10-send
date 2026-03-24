@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # 10-send — call the active provider with the assembled payload.
+# On failure, outputs error JSON on stdout so the error state can display it.
 set -euo pipefail
 
 payload="$(cat)"
@@ -15,9 +16,22 @@ for (( i=${#sources[@]}-1; i>=0; i-- )); do
   fi
 done
 
-[[ -z "${provider_bin}" ]] && {
-  echo "provider '${HARNESS_PROVIDER}' not found" >&2
+if [[ -z "${provider_bin}" ]]; then
+  jq -n --arg msg "provider '${HARNESS_PROVIDER}' not found" '{error: $msg}'
   exit 1
-}
+fi
 
-echo "${payload}" | "${provider_bin}" 2>>"${HARNESS_LOG}"
+# Call provider, capturing stderr for error reporting
+err_file="$(mktemp)"
+trap 'rm -f "${err_file}"' EXIT
+
+if response="$(echo "${payload}" | "${provider_bin}" 2>"${err_file}")"; then
+  cat "${err_file}" >> "${HARNESS_LOG}"
+  echo "${response}"
+else
+  rc=$?
+  err="$(cat "${err_file}")"
+  [[ -n "${err}" ]] && echo "${err}" >> "${HARNESS_LOG}"
+  jq -n --arg msg "${err:-provider exited ${rc}}" '{error: $msg}'
+  exit "${rc}"
+fi

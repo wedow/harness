@@ -19,6 +19,7 @@ ln -s ~/src/harness/bin/harness ~/.local/bin/hs  # alias
 ```bash
 # Set an API key for any discovered provider
 export ANTHROPIC_API_KEY="sk-ant-..."  # or
+export OPENAI_API_KEY="sk-..."        # or
 export ZAI_AUTH_TOKEN="..."
 
 # One-shot: run an agent to completion
@@ -45,7 +46,7 @@ The core is a pure state machine (~670 lines). It does three things:
 
 3. **Transitions**: `start → assemble → send → receive → (tool_exec → tool_done → assemble) → done`.
 
-The loop has zero provider-specific knowledge. Message formats, API calls, response parsing — all of it lives in provider-specific hooks (`plugins/anthropic/`, `plugins/zai/`). Provider-agnostic behavior (tool execution, prompt loading, tool discovery) lives in `plugins/core/`.
+The loop has zero provider-specific knowledge. Message formats, API calls, response parsing — all of it lives in provider-specific hooks (`plugins/anthropic/`, `plugins/openai/`, `plugins/zai/`). Provider-agnostic behavior (tool execution, prompt loading, tool discovery) lives in `plugins/core/`.
 
 ## Plugin types
 
@@ -98,7 +99,7 @@ my-provider --env       # list supported env vars with descriptions
 
 If `HARNESS_PROVIDER` is not set, harness auto-selects the first discovered provider whose `--ready` exits 0, and loads its `--defaults` for unset vars like `HARNESS_MODEL`.
 
-Built-in: `anthropic`, `zai`. Each lives in its own provider plugin directory (`plugins/anthropic/`, `plugins/zai/`) with provider-specific hooks for message assembly and response parsing. Writing a new provider means creating a plugin directory with the provider binary and format-translation hooks.
+Built-in: `anthropic`, `openai`, `zai`. Each lives in its own provider plugin directory (`plugins/anthropic/`, `plugins/openai/`, `plugins/zai/`) with provider-specific hooks for message assembly and response parsing. The `openai` provider works with any OpenAI-compatible API (ollama, llama.cpp, vLLM) — set `OPENAI_API_URL` to point at a local server. Writing a new provider means creating a plugin directory with the provider binary and format-translation hooks.
 
 See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plugin types.
 

@@ -56,7 +56,7 @@ Harness walks from CWD upward to `/`, collecting `.harness/` directories. Local 
 
 **Hooks** (`hooks.d/<stage>/`): Pipeline executables named `NN-name` (numeric prefix for sort order). Each hook's stdout feeds the next's stdin. Non-zero exit aborts the chain. Stages: `start`, `assemble`, `send`, `receive`, `tool_exec`, `tool_done`, `error`, `done`.
 
-**Providers** (`providers/`): Receive assembled payload JSON on stdin, output raw API response. Support introspection flags: `--describe`, `--ready`, `--defaults`, `--env`. If `HARNESS_PROVIDER` is not set, harness auto-selects the first provider whose `--ready` exits 0. Built-in: `anthropic`, `zai`.
+**Providers** (`providers/`): Receive assembled payload JSON on stdin, output raw API response. Support introspection flags: `--describe`, `--ready`, `--defaults`, `--env`. If `HARNESS_PROVIDER` is not set, harness auto-selects the first provider whose `--ready` exits 0. Built-in: `anthropic`, `openai`, `zai`.
 
 **Prompts** (`HARNESS.md` + `prompts/*.md`): Concatenated into the system prompt by the `30-prompts` assemble hook. Global first, local last.
 
@@ -74,6 +74,8 @@ Sessions live in `<sessions-dir>/<id>/messages/` as numbered markdown files with
 - `plugins/core/hooks.d/` — provider-agnostic hooks (send, tool_exec, tool_done, assemble/tools, assemble/prompts)
 - `plugins/anthropic/hooks.d/` — Anthropic-specific hooks (assemble/messages, receive/save)
 - `plugins/anthropic/providers/anthropic` — Anthropic API call
+- `plugins/openai/hooks.d/` — OpenAI-specific hooks (assemble/messages, receive/save)
+- `plugins/openai/providers/openai` — OpenAI-compatible API call (works with ollama, llama.cpp, vLLM)
 - `plugins/zai/` — z.ai provider (Anthropic-compatible, hooks symlinked to anthropic)
 - `plugins/core/tools/` — five built-in tools
 

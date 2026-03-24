@@ -1,0 +1,96 @@
+#!/usr/bin/env bash
+# 10-messages — read canonical session files, produce OpenAI messages array.
+# Pipeline hook: receives partial payload on stdin, adds "messages" field.
+set -euo pipefail
+
+payload="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+
+[[ -d "${msg_dir}" ]] || { echo "${payload}"; exit 0; }
+
+messages="[]"
+
+add_msg() {
+  messages="$(echo "${messages}" | jq --argjson m "$1" '. + [$m]')"
+}
+
+for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
+  _role=""
+  _call_id=""
+  _error="false"
+  in_fm=false
+  body=""
+  while IFS= read -r line; do
+    if [[ "${line}" == "---" ]]; then
+      if ${in_fm}; then in_fm=false; continue
+      else in_fm=true; continue; fi
+    fi
+    if ${in_fm}; then
+      case "${line}" in
+        role:*)     _role="${line#role: }" ;;
+        call_id:*)  _call_id="${line#call_id: }" ;;
+        error:*)    _error="${line#error: }" ;;
+      esac
+    else
+      body+="${line}"$'\n'
+    fi
+  done < "${f}"
+  body="${body%$'\n'}"
+
+  case "${_role}" in
+    user)
+      add_msg "$(jq -n --arg c "${body}" '{role: "user", content: $c}')"
+      ;;
+    assistant)
+      # Parse text and tool_call blocks
+      text_content=""
+      tool_calls="[]"
+      in_tool_block=false
+      tool_id="" tool_name="" tool_body=""
+
+      while IFS= read -r line; do
+        if [[ "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
+          in_tool_block=true
+          tool_id="${BASH_REMATCH[1]}"
+          tool_name="${BASH_REMATCH[2]}"
+          tool_body=""
+          continue
+        fi
+        if ${in_tool_block} && [[ "${line}" == '```' ]]; then
+          in_tool_block=false
+          tool_calls="$(echo "${tool_calls}" | jq \
+            --arg id "${tool_id}" --arg name "${tool_name}" --arg args "${tool_body}" \
+            '. + [{id: $id, type: "function", function: {name: $name, arguments: $args}}]')"
+          continue
+        fi
+        if ${in_tool_block}; then
+          tool_body+="${line}"
+        else
+          text_content+="${line}"$'\n'
+        fi
+      done <<< "${body}"
+      text_content="${text_content%$'\n'}"
+
+      # Build assistant message — OpenAI format uses tool_calls array, not content blocks
+      tc_count="$(echo "${tool_calls}" | jq 'length')"
+      if (( tc_count > 0 )); then
+        if [[ -n "${text_content}" ]]; then
+          add_msg "$(jq -n --arg c "${text_content}" --argjson tc "${tool_calls}" \
+            '{role: "assistant", content: $c, tool_calls: $tc}')"
+        else
+          add_msg "$(jq -n --argjson tc "${tool_calls}" \
+            '{role: "assistant", tool_calls: $tc}')"
+        fi
+      else
+        add_msg "$(jq -n --arg c "${text_content}" '{role: "assistant", content: $c}')"
+      fi
+      ;;
+    tool_result)
+      # OpenAI uses role: "tool" with tool_call_id
+      add_msg "$(jq -n --arg id "${_call_id}" --arg c "${body}" \
+        '{role: "tool", tool_call_id: $id, content: $c}')"
+      ;;
+  esac
+done
+
+echo "${payload}" | jq --argjson msgs "${messages}" '. + {messages: $msgs}'

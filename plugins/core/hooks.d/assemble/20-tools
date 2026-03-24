@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# 20-tools — discover tool plugins and assemble the tools array.
+# Pipeline hook: receives partial payload on stdin, adds "tools" field.
+set -euo pipefail
+
+payload="$(cat)"
+
+# Reuse the harness tool discovery via the same dir-walking logic.
+# We replicate the discovery here to stay self-contained (no dependency
+# on the parent process's in-memory state).
+
+_collect() {
+  local dir="$1"
+  [[ -d "${dir}" ]] || return 0
+  for f in "${dir}"/*; do
+    [[ -x "${f}" ]] || continue
+    echo "${f}"
+  done
+}
+
+# Walk .harness/ dirs from CWD upward
+declare -A tool_map
+cur="${PWD}"
+while true; do
+  if [[ -d "${cur}/.harness/tools" ]]; then
+    while IFS= read -r f; do
+      [[ -z "$f" ]] && continue
+      local_name="$(basename "$f")"
+      # Most-local wins — don't overwrite if already set
+      [[ -z "${tool_map[$local_name]:-}" ]] && tool_map["$local_name"]="$f"
+    done < <(_collect "${cur}/.harness/tools")
+  fi
+  [[ "${cur}" == "/" ]] && break
+  cur="$(dirname "${cur}")"
+done
+
+# Home dir
+if [[ -d "${HOME}/.harness/tools" ]]; then
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    local_name="$(basename "$f")"
+    [[ -z "${tool_map[$local_name]:-}" ]] && tool_map["$local_name"]="$f"
+  done < <(_collect "${HOME}/.harness/tools")
+fi
+
+# Core tools (lowest priority)
+if [[ -d "${HARNESS_ROOT}/plugins/core/tools" ]]; then
+  while IFS= read -r f; do
+    [[ -z "$f" ]] && continue
+    local_name="$(basename "$f")"
+    [[ -z "${tool_map[$local_name]:-}" ]] && tool_map["$local_name"]="$f"
+  done < <(_collect "${HARNESS_ROOT}/plugins/core/tools")
+fi
+
+# Collect schemas
+tools="[]"
+for name in "${!tool_map[@]}"; do
+  path="${tool_map[$name]}"
+  schema="$("${path}" --schema 2>/dev/null)" || continue
+  tools="$(echo "${tools}" | jq --argjson s "${schema}" '. + [$s]')"
+done
+
+echo "${payload}" | jq --argjson tools "${tools}" '. + {tools: $tools}'

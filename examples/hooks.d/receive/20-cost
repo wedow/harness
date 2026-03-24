@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 20-cost — log token usage after each response.
+# Event hook on 'receive'. Drop this into .harness/hooks.d/receive/ to enable.
+set -euo pipefail
+
+response="$(cat)"
+cost_file="${HARNESS_SESSION}/cost.log"
+
+input_tokens="$(echo "${response}" | jq -r '.usage.input_tokens // 0')"
+output_tokens="$(echo "${response}" | jq -r '.usage.output_tokens // 0')"
+model="$(echo "${response}" | jq -r '.model // "unknown"')"
+
+echo "$(date -Iseconds) model=${model} in=${input_tokens} out=${output_tokens}" >> "${cost_file}"
+
+# Pass through
+echo "${response}"

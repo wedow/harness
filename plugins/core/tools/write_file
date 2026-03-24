@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# write_file — tool plugin: create or overwrite a file.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "write_file",
+  "description": "Create or overwrite a file with the given content. Parent directories are created automatically.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file (absolute or relative to working directory)"
+      },
+      "content": {
+        "type": "string",
+        "description": "Content to write to the file"
+      }
+    },
+    "required": ["path", "content"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "Create or overwrite files"
+    ;;
+  --exec)
+    input="$(cat)"
+    path="$(echo "${input}" | jq -r '.path')"
+    content="$(echo "${input}" | jq -r '.content')"
+
+    if [[ "${path}" != /* ]]; then
+      path="${HARNESS_CWD:-${PWD}}/${path}"
+    fi
+
+    mkdir -p "$(dirname "${path}")"
+    printf '%s' "${content}" > "${path}"
+    echo "wrote $(wc -c < "${path}") bytes to ${path}"
+    ;;
+  *)
+    echo "usage: write_file --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# 10-save — save the assistant response as a markdown message file.
+# Event hook: receives the raw API response JSON on stdin.
+set -euo pipefail
+
+response="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+[[ -d "${msg_dir}" ]] || exit 0
+
+# Determine next sequence number
+last="$(ls -1 "${msg_dir}/" 2>/dev/null | sort -n | tail -1)"
+if [[ -z "${last}" ]]; then
+  seq="0001"
+else
+  seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"
+fi
+
+# Extract metadata
+model="$(echo "${response}" | jq -r '.model // ""')"
+stop_reason="$(echo "${response}" | jq -r '.stop_reason // "end_turn"')"
+input_tokens="$(echo "${response}" | jq -r '.usage.input_tokens // 0')"
+output_tokens="$(echo "${response}" | jq -r '.usage.output_tokens // 0')"
+
+# Build the markdown body from content blocks
+body=""
+content_blocks="$(echo "${response}" | jq -c '.content[]')"
+
+while IFS= read -r block; do
+  [[ -z "${block}" ]] && continue
+  btype="$(echo "${block}" | jq -r '.type')"
+  case "${btype}" in
+    text)
+      text="$(echo "${block}" | jq -r '.text')"
+      body+="${text}"$'\n'
+      ;;
+    tool_use)
+      tid="$(echo "${block}" | jq -r '.id')"
+      tname="$(echo "${block}" | jq -r '.name')"
+      tinput="$(echo "${block}" | jq -c '.input')"
+      body+=$'\n'"\`\`\`tool_use id=${tid} name=${tname}"$'\n'
+      body+="${tinput}"$'\n'
+      body+='```'$'\n'
+      ;;
+  esac
+done <<< "${content_blocks}"
+
+# Write the message file
+cat > "${msg_dir}/${seq}-assistant.md" <<EOF
+---
+role: assistant
+seq: ${seq}
+timestamp: $(date -Iseconds)
+model: ${model}
+stop_reason: ${stop_reason}
+input_tokens: ${input_tokens}
+output_tokens: ${output_tokens}
+---
+${body}
+EOF
+
+# Pass through
+echo "${response}"

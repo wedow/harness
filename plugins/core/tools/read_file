@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# read_file — tool plugin: read file contents, optionally a line range.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "read_file",
+  "description": "Read the contents of a file. Optionally specify a line range. Returns the file content with line numbers.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file (absolute or relative to working directory)"
+      },
+      "start_line": {
+        "type": "integer",
+        "description": "First line to read (1-indexed, optional)"
+      },
+      "end_line": {
+        "type": "integer",
+        "description": "Last line to read (inclusive, optional)"
+      }
+    },
+    "required": ["path"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "Read file contents with optional line range"
+    ;;
+  --exec)
+    input="$(cat)"
+    path="$(echo "${input}" | jq -r '.path')"
+    start_line="$(echo "${input}" | jq -r '.start_line // empty')"
+    end_line="$(echo "${input}" | jq -r '.end_line // empty')"
+
+    # Resolve relative paths against working directory
+    if [[ "${path}" != /* ]]; then
+      path="${HARNESS_CWD:-${PWD}}/${path}"
+    fi
+
+    if [[ ! -f "${path}" ]]; then
+      echo "error: file not found: ${path}"
+      exit 1
+    fi
+
+    if [[ -n "${start_line}" && -n "${end_line}" ]]; then
+      sed -n "${start_line},${end_line}p" "${path}" | nl -ba -w4
+    elif [[ -n "${start_line}" ]]; then
+      tail -n "+${start_line}" "${path}" | nl -ba -w4 -v "${start_line}"
+    else
+      nl -ba -w4 "${path}"
+    fi
+    ;;
+  *)
+    echo "usage: read_file --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

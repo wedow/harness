@@ -1,0 +1,50 @@
+#!/usr/bin/env bash
+# anthropic — provider plugin for the Anthropic Messages API.
+# Receives assembled payload JSON on stdin, outputs the API response.
+set -euo pipefail
+
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set}"
+ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
+ANTHROPIC_API_VERSION="${ANTHROPIC_API_VERSION:-2023-06-01}"
+ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-8192}"
+
+payload="$(cat)"
+
+# Extract fields from the assembled payload
+model="$(echo "${payload}" | jq -r '.model // ""')"
+[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
+
+system="$(echo "${payload}" | jq -r '.system // ""')"
+messages="$(echo "${payload}" | jq -c '.messages // []')"
+tools="$(echo "${payload}" | jq -c '.tools // []')"
+
+# Build the API request body
+request="$(jq -n \
+  --arg model "${model}" \
+  --argjson max_tokens "${ANTHROPIC_MAX_TOKENS}" \
+  --arg system "${system}" \
+  --argjson messages "${messages}" \
+  --argjson tools "${tools}" \
+  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
+   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
+)"
+
+# Call the API
+response="$(curl -sS "${ANTHROPIC_API_URL}" \
+  -H "x-api-key: ${ANTHROPIC_API_KEY}" \
+  -H "anthropic-version: ${ANTHROPIC_API_VERSION}" \
+  -H "content-type: application/json" \
+  -d "${request}" \
+  --max-time 300
+)"
+
+# Check for API errors
+error_type="$(echo "${response}" | jq -r '.type // ""')"
+if [[ "${error_type}" == "error" ]]; then
+  error_msg="$(echo "${response}" | jq -r '.error.message // "unknown error"')"
+  echo "anthropic API error: ${error_msg}" >&2
+  exit 1
+fi
+
+# Pass through the raw response
+echo "${response}"

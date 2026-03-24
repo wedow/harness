@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# str_replace — tool plugin: replace a unique string in a file.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "str_replace",
+  "description": "Replace a unique string in a file with another string. The old_str must appear exactly once in the file. Use for targeted edits without rewriting the entire file.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file"
+      },
+      "old_str": {
+        "type": "string",
+        "description": "Exact string to find (must be unique in the file)"
+      },
+      "new_str": {
+        "type": "string",
+        "description": "Replacement string (empty string to delete)"
+      }
+    },
+    "required": ["path", "old_str", "new_str"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "Replace a unique string in a file"
+    ;;
+  --exec)
+    input="$(cat)"
+    path="$(echo "${input}" | jq -r '.path')"
+    old_str="$(echo "${input}" | jq -r '.old_str')"
+    new_str="$(echo "${input}" | jq -r '.new_str')"
+
+    if [[ "${path}" != /* ]]; then
+      path="${HARNESS_CWD:-${PWD}}/${path}"
+    fi
+
+    if [[ ! -f "${path}" ]]; then
+      echo "error: file not found: ${path}"
+      exit 1
+    fi
+
+    # Count occurrences
+    count="$(grep -cF "${old_str}" "${path}" 2>/dev/null)" || count=0
+    if (( count == 0 )); then
+      echo "error: old_str not found in ${path}"
+      exit 1
+    fi
+    if (( count > 1 )); then
+      echo "error: old_str appears ${count} times in ${path} (must be unique)"
+      exit 1
+    fi
+
+    # Perform replacement using perl for reliable multi-line handling
+    perl -i -0pe "
+      \$old = quotemeta(q{${old_str}});
+      s/\$old/\Q${new_str}\E/s;
+    " "${path}" 2>/dev/null || {
+      # Fallback: python if perl isn't available
+      python3 -c "
+import sys
+p = '${path}'
+with open(p) as f: content = f.read()
+content = content.replace('''${old_str}''', '''${new_str}''', 1)
+with open(p, 'w') as f: f.write(content)
+" 2>/dev/null || {
+        echo "error: replacement failed (need perl or python3)"
+        exit 1
+      }
+    }
+
+    echo "replaced in ${path}"
+    ;;
+  *)
+    echo "usage: str_replace --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

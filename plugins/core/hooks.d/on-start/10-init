@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# 10-init — set up session environment on start.
+# Reads session.md to recover the original working directory and exports it.
+set -euo pipefail
+
+if [[ -f "${HARNESS_SESSION}/session.md" ]]; then
+  cwd="$(sed -n 's/^cwd: //p' "${HARNESS_SESSION}/session.md")"
+  if [[ -n "${cwd}" && -d "${cwd}" ]]; then
+    # Write to a session env file that other hooks/tools can source
+    echo "HARNESS_CWD=${cwd}" > "${HARNESS_SESSION}/.env"
+  fi
+fi
+
+# Source the env file if it exists (for this process and children)
+if [[ -f "${HARNESS_SESSION}/.env" ]]; then
+  set -a
+  source "${HARNESS_SESSION}/.env"
+  set +a
+fi

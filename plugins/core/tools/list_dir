@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# list_dir — tool plugin: list directory contents.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "list_dir",
+  "description": "List directory contents up to 2 levels deep. Shows files and directories, ignoring hidden items and node_modules by default.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the directory (absolute or relative to working directory)"
+      },
+      "show_hidden": {
+        "type": "boolean",
+        "description": "Include hidden files/dirs (default: false)"
+      }
+    },
+    "required": ["path"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "List directory contents (tree view)"
+    ;;
+  --exec)
+    input="$(cat)"
+    path="$(echo "${input}" | jq -r '.path')"
+    show_hidden="$(echo "${input}" | jq -r '.show_hidden // false')"
+
+    if [[ "${path}" != /* ]]; then
+      path="${HARNESS_CWD:-${PWD}}/${path}"
+    fi
+
+    if [[ ! -d "${path}" ]]; then
+      echo "error: directory not found: ${path}"
+      exit 1
+    fi
+
+    if command -v tree &>/dev/null; then
+      local_flags=(-L 2 --noreport -I 'node_modules|__pycache__|.git')
+      [[ "${show_hidden}" == "true" ]] && local_flags+=(-a)
+      tree "${local_flags[@]}" "${path}"
+    else
+      # Fallback without tree
+      find "${path}" -maxdepth 2 \
+        -not -path '*/node_modules/*' \
+        -not -path '*/__pycache__/*' \
+        -not -path '*/.git/*' \
+        $(if [[ "${show_hidden}" != "true" ]]; then echo "-not -name '.*'"; fi) \
+        | head -100 \
+        | sed "s|^${path}/||" \
+        | sort
+    fi
+    ;;
+  *)
+    echo "usage: list_dir --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

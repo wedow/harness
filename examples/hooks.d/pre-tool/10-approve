@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# 10-approve — require human approval before executing certain tools.
+# Gate hook on 'pre-tool'. Non-zero exit blocks the tool call.
+# Drop this into .harness/hooks.d/pre-tool/ to enable.
+set -euo pipefail
+
+tc="$(cat)"
+tool_name="$(echo "${tc}" | jq -r '.name')"
+tool_input="$(echo "${tc}" | jq -r '.input | tostring')"
+
+# Tools that always require approval (customize this list)
+DANGEROUS_TOOLS="${HARNESS_APPROVE_TOOLS:-bash}"
+
+for dt in ${DANGEROUS_TOOLS}; do
+  if [[ "${tool_name}" == "${dt}" ]]; then
+    echo -e "\033[1;31m[approval required]\033[0m ${tool_name}: ${tool_input}" >&2
+    printf "allow? [y/N] " >&2
+    read -r answer < /dev/tty
+    if [[ "${answer}" != "y" && "${answer}" != "Y" ]]; then
+      exit 1  # block the tool call
+    fi
+    break
+  fi
+done
+
+# Pass through
+echo "${tc}"

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# bash — tool plugin: execute a bash command and return stdout+stderr.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "bash",
+  "description": "Execute a bash command in the working directory. Returns combined stdout and stderr. Use for running scripts, installing packages, file operations, or any shell command.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "The bash command to execute"
+      }
+    },
+    "required": ["command"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "Execute bash commands"
+    ;;
+  --exec)
+    input="$(cat)"
+    command="$(echo "${input}" | jq -r '.command')"
+    # Run in the session's original cwd if available
+    cwd="${HARNESS_CWD:-${PWD}}"
+    cd "${cwd}" 2>/dev/null || true
+    # Execute with a timeout, capture both stdout and stderr
+    timeout "${HARNESS_TOOL_TIMEOUT:-120}" bash -c "${command}" 2>&1 || true
+    ;;
+  *)
+    echo "usage: bash --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

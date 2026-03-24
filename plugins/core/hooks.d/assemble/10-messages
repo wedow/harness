@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# 10-messages — assemble the messages array from session message files.
+# Pipeline hook: receives partial payload on stdin, adds "messages" field.
+set -euo pipefail
+
+payload="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+
+[[ -d "${msg_dir}" ]] || { echo "${payload}"; exit 0; }
+
+messages="[]"
+tool_results="[]"
+
+flush_tool_results() {
+  if [[ "${tool_results}" != "[]" ]]; then
+    local msg
+    msg="$(jq -n --argjson content "${tool_results}" '{role: "user", content: $content}')"
+    messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+    tool_results="[]"
+  fi
+}
+
+for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
+  _role=""
+  _tool_use_id=""
+  _is_error="false"
+  in_fm=false
+  body=""
+  while IFS= read -r line; do
+    if [[ "${line}" == "---" ]]; then
+      if ${in_fm}; then in_fm=false; continue
+      else in_fm=true; continue; fi
+    fi
+    if ${in_fm}; then
+      case "${line}" in
+        role:*)         _role="${line#role: }" ;;
+        tool_use_id:*)  _tool_use_id="${line#tool_use_id: }" ;;
+        is_error:*)     _is_error="${line#is_error: }" ;;
+      esac
+    else
+      body+="${line}"$'\n'
+    fi
+  done < "${f}"
+  body="${body%$'\n'}"
+
+  case "${_role}" in
+    user)
+      flush_tool_results
+      msg="$(jq -n --arg content "${body}" '{role: "user", content: $content}')"
+      messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+      ;;
+    assistant)
+      flush_tool_results
+      content_blocks="[]"
+      current_text=""
+      in_tool_block=false
+      tool_id="" tool_name="" tool_body=""
+
+      while IFS= read -r line; do
+        if [[ "${line}" =~ ^\`\`\`tool_use\ id=([^ ]+)\ name=([^ ]+) ]]; then
+          if [[ -n "${current_text}" ]]; then
+            content_blocks="$(echo "${content_blocks}" | jq --arg t "${current_text%$'\n'}" \
+              '. + [{type: "text", text: $t}]')"
+            current_text=""
+          fi
+          in_tool_block=true
+          tool_id="${BASH_REMATCH[1]}"
+          tool_name="${BASH_REMATCH[2]}"
+          tool_body=""
+          continue
+        fi
+        if ${in_tool_block} && [[ "${line}" == '```' ]]; then
+          in_tool_block=false
+          content_blocks="$(echo "${content_blocks}" | jq \
+            --arg id "${tool_id}" --arg name "${tool_name}" --argjson input "${tool_body}" \
+            '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
+          continue
+        fi
+        if ${in_tool_block}; then
+          tool_body+="${line}"
+        else
+          current_text+="${line}"$'\n'
+        fi
+      done <<< "${body}"
+
+      if [[ -n "${current_text}" ]]; then
+        current_text="${current_text%$'\n'}"
+        [[ -n "${current_text}" ]] && \
+          content_blocks="$(echo "${content_blocks}" | jq --arg t "${current_text}" \
+            '. + [{type: "text", text: $t}]')"
+      fi
+
+      block_count="$(echo "${content_blocks}" | jq 'length')"
+      if (( block_count == 1 )) && [[ "$(echo "${content_blocks}" | jq -r '.[0].type')" == "text" ]]; then
+        msg="$(echo "${content_blocks}" | jq '{role: "assistant", content: .[0].text}')"
+      else
+        msg="$(echo "${content_blocks}" | jq '{role: "assistant", content: .}')"
+      fi
+      messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+      ;;
+    tool_result)
+      if [[ "${_is_error}" == "true" ]]; then
+        tr="$(jq -n --arg id "${_tool_use_id}" --arg content "${body}" \
+          '{type: "tool_result", tool_use_id: $id, content: $content, is_error: true}')"
+      else
+        tr="$(jq -n --arg id "${_tool_use_id}" --arg content "${body}" \
+          '{type: "tool_result", tool_use_id: $id, content: $content}')"
+      fi
+      tool_results="$(echo "${tool_results}" | jq --argjson tr "${tr}" '. + [$tr]')"
+      ;;
+  esac
+done
+
+flush_tool_results
+echo "${payload}" | jq --argjson msgs "${messages}" '. + {messages: $msgs}'

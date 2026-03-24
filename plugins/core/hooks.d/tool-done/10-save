@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# 10-save — save a tool result as a markdown message file.
+# Event hook: receives JSON with tool_use_id, name, input, result, is_error.
+set -euo pipefail
+
+data="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+[[ -d "${msg_dir}" ]] || exit 0
+
+# Next sequence number
+last="$(ls -1 "${msg_dir}/" 2>/dev/null | sort -n | tail -1)"
+if [[ -z "${last}" ]]; then
+  seq="0001"
+else
+  seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"
+fi
+
+tool_use_id="$(echo "${data}" | jq -r '.tool_use_id')"
+tool_name="$(echo "${data}" | jq -r '.name')"
+is_error="$(echo "${data}" | jq -r '.is_error')"
+result="$(echo "${data}" | jq -r '.result')"
+
+cat > "${msg_dir}/${seq}-tool_result.md" <<EOF
+---
+role: tool_result
+seq: ${seq}
+timestamp: $(date -Iseconds)
+tool_use_id: ${tool_use_id}
+tool_name: ${tool_name}
+is_error: ${is_error}
+---
+${result}
+EOF
+
+# Pass through
+echo "${data}"

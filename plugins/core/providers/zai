@@ -4,6 +4,8 @@
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "z.ai (Anthropic-compatible)"; exit 0; }
+[[ "${1:-}" == "--ready" ]] && { [[ -n "${ZAI_AUTH_TOKEN:-}" ]]; exit $?; }
+[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ZAI_AUTH_TOKEN        auth token (required)
 ZAI_API_URL           API endpoint (https://api.z.ai/api/anthropic/v1/messages)

@@ -4,6 +4,8 @@
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "Anthropic Messages API"; exit 0; }
+[[ "${1:-}" == "--ready" ]] && { [[ -n "${ANTHROPIC_API_KEY:-}" ]]; exit $?; }
+[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ANTHROPIC_API_KEY     API key (required)
 ANTHROPIC_API_URL     API endpoint (https://api.anthropic.com/v1/messages)

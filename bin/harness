@@ -20,8 +20,8 @@ if [[ -z "${HARNESS_SESSIONS:-}" ]]; then
   HARNESS_SESSIONS="${HARNESS_SESSIONS:-${HARNESS_HOME}/sessions}"
   unset _cur
 fi
-HARNESS_MODEL="${HARNESS_MODEL:-claude-sonnet-4-20250514}"
-HARNESS_PROVIDER="${HARNESS_PROVIDER:-anthropic}"
+HARNESS_MODEL="${HARNESS_MODEL:-}"
+HARNESS_PROVIDER="${HARNESS_PROVIDER:-}"
 HARNESS_MAX_TURNS="${HARNESS_MAX_TURNS:-100}"
 HARNESS_LOG="${HARNESS_LOG:-/dev/stderr}"
 
@@ -259,6 +259,32 @@ discover_providers() {
   done
 }
 
+# Auto-select provider and load its defaults for any unset HARNESS_ vars.
+_resolve_provider() {
+  # Auto-select: first discovered provider whose --ready exits 0
+  if [[ -z "${HARNESS_PROVIDER}" ]]; then
+    local name path
+    while read -r name path; do
+      [[ -z "${name}" ]] && continue
+      if "${path}" --ready 2>/dev/null; then
+        HARNESS_PROVIDER="${name}"
+        break
+      fi
+    done < <(discover_providers | sort)
+  fi
+  [[ -z "${HARNESS_PROVIDER}" ]] && return 0
+  # Load defaults from the selected provider
+  local provider_path
+  provider_path="$(find_provider "${HARNESS_PROVIDER}")" || return 0
+  local key val
+  while IFS='=' read -r key val; do
+    [[ -z "${key}" ]] && continue
+    case "${key}" in
+      model) [[ -z "${HARNESS_MODEL}" ]] && HARNESS_MODEL="${val}" ;;
+    esac
+  done < <("${provider_path}" --defaults 2>/dev/null || true)
+}
+
 # --------------------------------------------------------------------------- #
 #  Session management                                                          #
 # --------------------------------------------------------------------------- #
@@ -315,6 +341,7 @@ agent_loop() {
   export SESSION_DIR="${session_dir}"
 
   _build_tool_paths
+  [[ -z "${HARNESS_PROVIDER}" ]] && _die "no provider available. set HARNESS_PROVIDER or export an API key for a discovered provider."
   local provider_bin
   provider_bin="$(find_provider "${HARNESS_PROVIDER}")"
 
@@ -554,8 +581,8 @@ usage:
 
 environment:
   HARNESS_HOME             base directory (~/.harness)
-  HARNESS_MODEL            model to use (claude-sonnet-4-20250514)
-  HARNESS_PROVIDER         provider plugin name (anthropic)
+  HARNESS_MODEL            model (auto from provider --defaults)
+  HARNESS_PROVIDER         provider (auto: first with credentials)
   HARNESS_MAX_TURNS        max agent loop iterations (100)
 EOF
 
@@ -597,6 +624,7 @@ main() {
   _require jq
   _require curl
   mkdir -p "${HARNESS_HOME}" "${HARNESS_SESSIONS}"
+  _resolve_provider
 
   local cmd="${1:-help}"; shift || true
   case "${cmd}" in

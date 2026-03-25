@@ -2,8 +2,13 @@
 # 30-prompts — load system prompt content from the filesystem.
 #
 # Iterates HARNESS_SOURCES (global first = lowest priority first in the list),
-# collecting HARNESS.md files and prompts/*.md from each source.
+# collecting AGENTS.md files and prompts/*.md from each source.
 # The baked-in HARNESS_SYSTEM from env is always the very first block.
+#
+# AGENTS.md follows the agents.md standard (https://agents.md): the file lives
+# at the project root (the parent of each .harness/ source directory), not
+# inside .harness/ itself.  Additional prompt fragments in prompts/*.md remain
+# a harness-specific composability feature.
 set -euo pipefail
 
 payload="$(cat)"
@@ -15,10 +20,11 @@ system_parts+=("${HARNESS_SYSTEM}")
 # Iterate HARNESS_SOURCES (global first = lowest priority first)
 IFS=':' read -ra sources <<< "${HARNESS_SOURCES}"
 for src in "${sources[@]}"; do
-  # HARNESS.md at the root of this source
-  [[ -f "${src}/HARNESS.md" ]] && system_parts+=("$(cat "${src}/HARNESS.md")")
+  # AGENTS.md at the parent of this source (agents.md standard location)
+  parent="$(dirname "${src}")"
+  [[ -f "${parent}/AGENTS.md" ]] && system_parts+=("$(cat "${parent}/AGENTS.md")")
 
-  # All .md files in prompts/ sorted
+  # All .md files in prompts/ sorted (harness-specific composability)
   if [[ -d "${src}/prompts" ]]; then
     for f in $(ls -1 "${src}/prompts/"*.md 2>/dev/null | sort); do
       system_parts+=("$(cat "${f}")")

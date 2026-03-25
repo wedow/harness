@@ -58,7 +58,7 @@ Harness walks from CWD upward to `/`, collecting `.harness/` directories. Local 
 
 **Providers** (`providers/`): Receive assembled payload JSON on stdin, output raw API response. Support introspection flags: `--describe`, `--ready`, `--defaults`, `--env`. If `HARNESS_PROVIDER` is not set, harness auto-selects the first provider whose `--ready` exits 0. Built-in: `anthropic`, `openai`, `zai`.
 
-**Prompts** (`HARNESS.md` + `prompts/*.md`): Concatenated into the system prompt by the `30-prompts` assemble hook. Global first, local last.
+**Prompts** (`AGENTS.md` + `prompts/*.md`): `AGENTS.md` files follow the [agents.md standard](https://agents.md) — placed at the project root (parent of `.harness/`), not inside it. The `30-prompts` assemble hook concatenates them (global first, local last). Additional prompt fragments go in `.harness/prompts/*.md`.
 
 ### Canonical Message Format
 

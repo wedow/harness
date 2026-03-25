@@ -106,8 +106,8 @@ See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plug
 ## Directory structure
 
 ```
+~/AGENTS.md                  # global agent instructions (agents.md standard)
 ~/.harness/                  # global (always loaded)
-  HARNESS.md                 # global system prompt additions
   prompts/                   # additional prompt files (sorted, all loaded)
     00-persona.md
     10-coding-style.md
@@ -116,14 +116,16 @@ See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plug
   providers/                 # global providers
   sessions/                  # session storage (default)
 
+~/project/AGENTS.md          # project-specific instructions (agents.md standard)
 ~/project/.harness/          # project-local (loaded when CWD is under ~/project)
-  HARNESS.md                 # project-specific instructions
   tools/
     deploy                   # project-specific deploy tool
   hooks.d/
     tool_exec/
       05-approve             # require approval for this project
 ```
+
+System prompts follow the [agents.md](https://agents.md) standard: place an `AGENTS.md` file at the root of any directory with a `.harness/` config. For composable prompt fragments, use `prompts/*.md` inside `.harness/`.
 
 When multiple `.harness/` directories exist in the path from CWD to `$HOME`, they all contribute. For hooks and tools with the same basename, the most-local one wins. For prompt content, everything is concatenated (global first, local last, so local instructions can refine global ones).
 
@@ -179,8 +181,8 @@ mkdir -p .harness/tools
 cp examples/tools/web_fetch .harness/tools/
 chmod +x .harness/tools/web_fetch
 
-# Add project context
-cat > .harness/HARNESS.md << 'EOF'
+# Add project context (agents.md standard)
+cat > AGENTS.md << 'EOF'
 This is a Rust project using tokio for async. Run tests with `cargo test`.
 EOF
 ```

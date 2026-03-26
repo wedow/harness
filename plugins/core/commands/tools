@@ -8,6 +8,17 @@ esac
 
 source "${HARNESS_ROOT}/bin/harness"
 
+_collect_tools_from() {
+  local dir="$1"
+  local -n tmap_ref="$2"
+  [[ -d "${dir}" ]] || return 0
+  local f
+  for f in "${dir}"/*; do
+    [[ -x "${f}" ]] || continue
+    tmap_ref["$(basename "${f}")"]="${f}"
+  done
+}
+
 _discover_sources
 declare -A tool_map
 for src in "${_HARNESS_SOURCES[@]}"; do

@@ -20,4 +20,4 @@ if [[ -f "${HARNESS_SESSION}/.env" ]]; then
   set +a
 fi
 
-echo "${input}"
+echo "${input}" | jq '. + {next_state: "assemble"}'

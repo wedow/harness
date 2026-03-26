@@ -27,7 +27,7 @@ trap 'rm -f "${err_file}"' EXIT
 
 if response="$(echo "${payload}" | "${provider_bin}" 2>"${err_file}")"; then
   cat "${err_file}" >> "${HARNESS_LOG}"
-  echo "${response}"
+  echo "${response}" | jq '. + {next_state: "receive"}'
 else
   rc=$?
   err="$(cat "${err_file}")"

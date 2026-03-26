@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# 10-save — save a tool result as a canonical message file.
-# Receives JSON: {call_id, name, input, result, error}.
+# 10-save — save a tool result and route to next tool or back to assemble.
+# Receives JSON: {call_id, name, input, result, error, tool_calls: [...]}.
+# Emits: {next_state: "tool_exec", tool_calls: [...]} if more remain,
+#        {next_state: "assemble"} if done.
 set -euo pipefail
 
 data="$(cat)"
@@ -32,5 +34,10 @@ error: ${error}
 ${result}
 EOF
 
-# Pass through
-echo "${data}"
+# Route: more tool calls remaining → tool_exec, otherwise → assemble
+remaining="$(echo "${data}" | jq -c '.tool_calls')"
+if [[ "$(echo "${remaining}" | jq 'length')" -gt 0 ]]; then
+  jq -n --argjson tool_calls "${remaining}" '{next_state: "tool_exec", tool_calls: $tool_calls}'
+else
+  echo '{"next_state": "assemble"}'
+fi

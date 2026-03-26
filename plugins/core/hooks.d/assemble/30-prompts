@@ -40,4 +40,4 @@ for part in "${system_parts[@]}"; do
 done
 
 # Add system prompt to payload as a top-level "system" field
-echo "${payload}" | jq --arg sys "${system}" '. + {system: $sys}'
+echo "${payload}" | jq --arg sys "${system}" '. + {system: $sys, next_state: "send"}'

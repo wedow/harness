@@ -8,12 +8,72 @@ esac
 
 source "${HARNESS_ROOT}/bin/harness"
 
+_collect_tools_from() {
+  local dir="$1"
+  local -n tmap_ref="$2"
+  [[ -d "${dir}" ]] || return 0
+  local f
+  for f in "${dir}"/*; do
+    [[ -x "${f}" ]] || continue
+    tmap_ref["$(basename "${f}")"]="${f}"
+  done
+}
+
+_discover_providers() {
+  # Walk bundled plugins + .harness/ dirs WITHOUT provider scoping
+  local all_sources=()
+
+  local d
+  for d in "${HARNESS_ROOT}/plugins"/*/; do
+    [[ -d "${d}" ]] && all_sources+=("${d%/}")
+  done
+
+  local harness_dirs=()
+  local cur="${PWD}"
+  while true; do
+    [[ -d "${cur}/.harness" ]] && harness_dirs+=("${cur}/.harness")
+    [[ "${cur}" == "/" ]] && break
+    cur="$(dirname "${cur}")"
+  done
+  local found=0
+  for d in "${harness_dirs[@]:-}"; do
+    [[ "${d}" == "${HARNESS_HOME}" ]] && found=1
+  done
+  (( found )) || harness_dirs+=("${HARNESS_HOME}")
+
+  local i
+  for (( i=${#harness_dirs[@]}-1; i>=0; i-- )); do
+    local hd="${harness_dirs[i]}"
+    for d in "${hd}/plugins"/*/; do
+      [[ -d "${d}" ]] && all_sources+=("${d%/}")
+    done
+    all_sources+=("${hd}")
+  done
+
+  declare -A prov_map
+  local src
+  for src in "${all_sources[@]}"; do
+    local dir="${src}/providers"
+    [[ -d "${dir}" ]] || continue
+    local f
+    for f in "${dir}"/*; do
+      [[ -x "${f}" ]] || continue
+      prov_map["$(basename "${f}")"]="${f}"
+    done
+  done
+  for name in "${!prov_map[@]}"; do
+    echo "${name} ${prov_map[$name]}"
+  done
+}
+
 cat <<'EOF'
 harness — minimal agent loop, maximum extensibility
 
 usage:
-  hs run <message>         one-shot: create session, run to completion
-  hs chat [session-id]     interactive REPL (new or resume session)
+  hs "do something"         one-shot: run agent with a message
+  hs                        interactive REPL (new session)
+  hs <session-id>           resume a session
+  hs agent [args...]        explicit (same as above)
   hs session <sub> [args]  manage sessions (list, show <id>, dir [id])
   hs tools                 list discovered tools
   hs hooks [stage]         list discovered hooks
@@ -33,7 +93,7 @@ for src in "${_HARNESS_SOURCES[@]}"; do
   done
 done
 # Show any commands not already listed in the usage block
-builtin_cmds="run chat session tools hooks version help"
+builtin_cmds="agent session tools hooks version help"
 for name in $(printf '%s\n' "${!cmd_map[@]}" | sort); do
   [[ " ${builtin_cmds} " == *" ${name} "* ]] && continue
   path="${cmd_map[$name]}"
@@ -64,7 +124,7 @@ while read -r name path; do
   while IFS= read -r envline; do
     [[ -n "${envline}" ]] && printf '    %s\n' "${envline}"
   done < <("${path}" --env 2>/dev/null || true)
-done < <(discover_providers)
+done < <(_discover_providers)
 
 echo ""
 echo "tools (discovered):"

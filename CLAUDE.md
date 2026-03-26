@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-Harness is a minimal agent loop in bash. The core script (~500 lines) is a pure state machine that handles plugin discovery, hook dispatch, and state transitions. Everything else — message assembly, API calls, response parsing, tool execution, prompt loading, cost tracking, approval gates, CLI commands — lives in hooks and plugins that can be written in any language.
+Harness is a minimal agent loop in bash. The core script (~270 lines) is a plugin discovery walker, hook pipeline runner, state follower, and CLI dispatch. Everything else — session management, provider discovery, tool discovery, message assembly, API calls, response parsing, tool execution, prompt loading, cost tracking, approval gates, CLI commands — lives in hooks and plugins that can be written in any language.
 
 Dependencies: bash 4+, jq, curl. No package manager, no language runtime.
 
@@ -12,9 +12,10 @@ Dependencies: bash 4+, jq, curl. No package manager, no language runtime.
 
 ```bash
 # Run the agent
-bin/harness run "do something"      # one-shot
-bin/harness chat                     # interactive REPL
-bin/harness chat <session-id>        # resume session
+bin/harness "do something"           # one-shot (args = message)
+echo "do X" | bin/harness            # one-shot (stdin)
+bin/harness                          # interactive REPL
+bin/harness <session-id>             # resume session
 
 # Inspect
 bin/harness tools                    # list discovered tools
@@ -32,7 +33,7 @@ The `bin/hs` symlink is an alias for `bin/harness`.
 
 ### The State Machine
 
-The core loop is a pure state machine. It dispatches hooks for the current state, reads control fields (`next_state`, `items`, `output`) from the hook output, and transitions. It has no provider-specific knowledge.
+The core loop is a pure state follower. It dispatches hooks for the current state, reads `next_state` from the hook output, and transitions. The core has no built-in transitions — state flow is entirely declared by hooks. An empty or absent `next_state` stops the loop. After the loop ends, `output` is read from the terminal state's result and printed.
 
 ```
 start → assemble → send → receive → done
@@ -41,6 +42,8 @@ start → assemble → send → receive → done
                     │                  │
                     └──────────────────┘
 ```
+
+This diagram is emergent from hooks, not hardcoded. Hooks drive iteration: `tool_exec` pops one call, `tool_done` routes back to `tool_exec` or `assemble`.
 
 Discovery is fully dynamic — plugins are rediscovered every loop iteration, so tools and hooks can be added/removed at runtime.
 
@@ -52,7 +55,7 @@ Harness walks from CWD upward to `/`, collecting `.harness/` directories. Local 
 
 ### Five Plugin Types
 
-**Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `run`, `chat`, `session`, `tools`, `hooks`, `help`, `version`.
+**Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `agent`, `session`, `tools`, `hooks`, `help`, `version`. The default command (no args or unrecognized first arg) is `agent`.
 
 **Tools** (`tools/`): Executables responding to `--schema`, `--describe`, `--exec`. Input is JSON on stdin via `--exec`, output on stdout. Language-agnostic. Core tools: `bash`, `read_file`, `write_file`, `str_replace`, `list_dir`. Additional bundled tools: `agent` (spawn subagent sessions), `skill` (load skill instructions).
 
@@ -72,8 +75,8 @@ Sessions live in `<sessions-dir>/<id>/messages/` as numbered markdown files with
 
 ### Key Files
 
-- `bin/harness` — core: discovery, state machine, command dispatch (no provider-specific code)
-- `plugins/core/commands/` — built-in CLI commands (run, chat, session, tools, hooks, help, version)
+- `bin/harness` — core: source discovery, hook pipeline runner, state follower, CLI dispatch (~270 lines)
+- `plugins/core/commands/` — built-in CLI commands (agent, session, tools, hooks, help, version)
 - `plugins/core/hooks.d/` — provider-agnostic hooks (send, tool_exec, tool_done, assemble/tools, assemble/prompts)
 - `plugins/anthropic/hooks.d/` — Anthropic-specific hooks (assemble/messages, receive/save)
 - `plugins/anthropic/providers/anthropic` — Anthropic API call

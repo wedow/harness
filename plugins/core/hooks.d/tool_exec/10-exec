@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# 10-exec — execute a single tool call.
-# Receives tool call JSON on stdin: {id, name, input}.
-# Returns tool result JSON: {call_id, name, input, result, error}.
+# 10-exec — pop and execute the first tool call from the queue.
+# Receives context JSON on stdin: {tool_calls: [{id, name, input}, ...]}.
+# Returns: {call_id, name, input, result, error, tool_calls: [...remaining], next_state: "tool_done"}.
 set -euo pipefail
 
 data="$(cat)"
-call_id="$(echo "${data}" | jq -r '.id')"
-tool_name="$(echo "${data}" | jq -r '.name')"
-input="$(echo "${data}" | jq -c '.input')"
+call_id="$(echo "${data}" | jq -r '.tool_calls[0].id')"
+tool_name="$(echo "${data}" | jq -r '.tool_calls[0].name')"
+input="$(echo "${data}" | jq -c '.tool_calls[0].input')"
+remaining="$(echo "${data}" | jq -c '.tool_calls[1:]')"
 
 # Source session env if available (picks up HARNESS_CWD etc.)
 if [[ -f "${HARNESS_SESSION}/.env" ]]; then
@@ -65,11 +66,12 @@ fi
   [[ "${error}" == "true" ]] && echo "  (error)" || true
 } >> "${HARNESS_LOG}" 2>/dev/null || true
 
-# Return result JSON
+# Return result JSON with remaining tool calls
 jq -n \
   --arg call_id "${call_id}" \
   --arg name "${tool_name}" \
   --argjson input "${input}" \
   --arg result "${result}" \
   --argjson error "${error}" \
-  '{call_id: $call_id, name: $name, input: $input, result: $result, error: $error}'
+  --argjson tool_calls "${remaining}" \
+  '{call_id: $call_id, name: $name, input: $input, result: $result, error: $error, tool_calls: $tool_calls, next_state: "tool_done"}'

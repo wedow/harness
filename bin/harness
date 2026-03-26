@@ -26,17 +26,6 @@ HARNESS_PROVIDER="${HARNESS_PROVIDER:-}"
 HARNESS_MAX_TURNS="${HARNESS_MAX_TURNS:-100}"
 HARNESS_LOG="${HARNESS_LOG:-/dev/stderr}"
 
-# State machine default transitions
-declare -A DEFAULT_NEXT=(
-  [start]=assemble
-  [assemble]=send
-  [send]=receive
-  [receive]=done
-  [tool_exec]=tool_done
-  [tool_done]=assemble
-  [error]=done
-)
-
 # --------------------------------------------------------------------------- #
 #  Source discovery                                                            #
 # --------------------------------------------------------------------------- #
@@ -177,272 +166,38 @@ _collect_hooks_from() {
 }
 
 # --------------------------------------------------------------------------- #
-#  Tool discovery (for CLI commands)                                           #
-# --------------------------------------------------------------------------- #
-discover_tools() {
-  _discover_sources
-  declare -A tool_map
-
-  local src
-  for src in "${_HARNESS_SOURCES[@]}"; do
-    _collect_tools_from "${src}/tools" tool_map
-  done
-
-  local schemas="[]"
-  for name in "${!tool_map[@]}"; do
-    local path="${tool_map[$name]}"
-    local schema
-    schema="$("${path}" --schema 2>/dev/null)" || continue
-    schemas="$(echo "${schemas}" | jq --argjson s "${schema}" '. + [$s]')"
-  done
-  echo "${schemas}"
-}
-
-_collect_tools_from() {
-  local dir="$1"
-  local -n tmap_ref="$2"
-  [[ -d "${dir}" ]] || return 0
-  local f
-  for f in "${dir}"/*; do
-    [[ -x "${f}" ]] || continue
-    local name="$(basename "${f}")"
-    tmap_ref["${name}"]="${f}"
-  done
-}
-
-# --------------------------------------------------------------------------- #
-#  Provider discovery (unscoped — sees ALL providers)                          #
-# --------------------------------------------------------------------------- #
-discover_providers() {
-  # Walk bundled plugins + .harness/ dirs WITHOUT provider scoping
-  local all_sources=()
-
-  local d
-  for d in "${HARNESS_ROOT}/plugins"/*/; do
-    [[ -d "${d}" ]] && all_sources+=("${d%/}")
-  done
-
-  local harness_dirs=()
-  local cur="${PWD}"
-  while true; do
-    [[ -d "${cur}/.harness" ]] && harness_dirs+=("${cur}/.harness")
-    [[ "${cur}" == "/" ]] && break
-    cur="$(dirname "${cur}")"
-  done
-  local found=0
-  for d in "${harness_dirs[@]:-}"; do
-    [[ "${d}" == "${HARNESS_HOME}" ]] && found=1
-  done
-  (( found )) || harness_dirs+=("${HARNESS_HOME}")
-
-  local i
-  for (( i=${#harness_dirs[@]}-1; i>=0; i-- )); do
-    local hd="${harness_dirs[i]}"
-    for d in "${hd}/plugins"/*/; do
-      [[ -d "${d}" ]] && all_sources+=("${d%/}")
-    done
-    all_sources+=("${hd}")
-  done
-
-  declare -A prov_map
-  local src
-  for src in "${all_sources[@]}"; do
-    local dir="${src}/providers"
-    [[ -d "${dir}" ]] || continue
-    local f
-    for f in "${dir}"/*; do
-      [[ -x "${f}" ]] || continue
-      prov_map["$(basename "${f}")"]="${f}"
-    done
-  done
-  for name in "${!prov_map[@]}"; do
-    echo "${name} ${prov_map[$name]}"
-  done
-}
-
-find_provider() {
-  local name="$1"
-  _discover_sources
-  local i
-  for (( i=${#_HARNESS_SOURCES[@]}-1; i>=0; i-- )); do
-    [[ -x "${_HARNESS_SOURCES[i]}/providers/${name}" ]] && {
-      echo "${_HARNESS_SOURCES[i]}/providers/${name}"
-      return 0
-    }
-  done
-  _log "provider '${name}' not found"
-  return 1
-}
-
-_resolve_provider() {
-  if [[ -z "${HARNESS_PROVIDER}" ]]; then
-    local name path
-    while read -r name path; do
-      [[ -z "${name}" ]] && continue
-      if "${path}" --ready 2>/dev/null; then
-        HARNESS_PROVIDER="${name}"
-        break
-      fi
-    done < <(discover_providers | sort)
-  fi
-  [[ -z "${HARNESS_PROVIDER}" ]] && return 0
-  local provider_path
-  provider_path="$(find_provider "${HARNESS_PROVIDER}")" || return 0
-  local key val
-  while IFS='=' read -r key val; do
-    [[ -z "${key}" ]] && continue
-    case "${key}" in
-      model) [[ -z "${HARNESS_MODEL}" ]] && HARNESS_MODEL="${val}" ;;
-    esac
-  done < <("${provider_path}" --defaults 2>/dev/null || true)
-  return 0
-}
-
-# --------------------------------------------------------------------------- #
-#  Session management                                                         #
-# --------------------------------------------------------------------------- #
-session_new() {
-  local id
-  id="$(date +%Y%m%d-%H%M%S)-$$"
-  local dir="${HARNESS_SESSIONS}/${id}"
-  mkdir -p "${dir}/messages"
-  cat > "${dir}/session.md" <<EOF
----
-id: ${id}
-model: ${HARNESS_MODEL}
-provider: ${HARNESS_PROVIDER}
-created: $(date -Iseconds)
-cwd: ${PWD}
----
-EOF
-  echo "${dir}"
-}
-
-session_latest() {
-  ls -1td "${HARNESS_SESSIONS}"/*/ 2>/dev/null | head -1
-}
-
-next_seq() {
-  local dir="$1"
-  local last
-  last="$(ls -1 "${dir}/messages/" 2>/dev/null | sort -n | tail -1)"
-  if [[ -z "${last}" ]]; then
-    echo "0001"
-  else
-    printf '%04d' $(( 10#${last%%-*} + 1 ))
-  fi
-}
-
-save_user_message() {
-  local dir="$1" content="$2"
-  local seq; seq="$(next_seq "${dir}")"
-  cat > "${dir}/messages/${seq}-user.md" <<EOF
----
-role: user
-seq: ${seq}
-timestamp: $(date -Iseconds)
----
-${content}
-EOF
-}
-
-# --------------------------------------------------------------------------- #
-#  Main agent loop — pure state machine                                       #
+#  Main agent loop — pure state follower                                      #
 # --------------------------------------------------------------------------- #
 agent_loop() {
   local session_dir="$1"
   export SESSION_DIR="${session_dir}"
+  local state="start" context='{}' result="" rc=0 iterations=0
 
-  [[ -z "${HARNESS_PROVIDER}" ]] && _die "no provider available. set HARNESS_PROVIDER or export an API key for a discovered provider."
-
-  local state="start"
-  local context='{}'
-  local turns=0
-  local output=""
-
-  while true; do
+  while [[ -n "${state}" ]]; do
     _discover_sources
-
-    local result="" rc=0
+    result="" rc=0
     result="$(echo "${context}" | run_hooks "${state}")" && rc=0 || rc=$?
 
-    # Hook pipeline failure handling
     if (( rc != 0 )); then
-      if [[ "${state}" == "error" ]]; then
-        break
-      fi
-      state="error"
-      context="${result}"
-      continue
+      [[ "${state}" == "error" ]] && break
+      state="error"; context="${result}"; continue
     fi
 
-    # Extract control fields
-    local next_state=""
-    next_state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
-    [[ -z "${next_state}" ]] && next_state="${DEFAULT_NEXT[${state}]:-}"
-
-    local items=""
-    items="$(echo "${result}" | jq -c '.items // empty' 2>/dev/null)" || true
-
-    # Strip control fields to get context for next state
-    context="$(echo "${result}" | jq -c 'del(.next_state, .items, .output)' 2>/dev/null)" || context='{}'
+    state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
+    context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
     [[ -z "${context}" || "${context}" == "null" ]] && context='{}'
 
-    # Capture output for display at the end
-    local step_output=""
-    step_output="$(echo "${result}" | jq -r '.output // empty' 2>/dev/null)" || true
-    [[ -n "${step_output}" ]] && output="${step_output}"
-
-    # If current state is done, break (done hooks already ran)
-    if [[ "${state}" == "done" ]]; then
-      break
-    fi
-
-    # Process items if present
-    if [[ -n "${items}" && "${items}" != "null" && "${items}" != "[]" ]]; then
-      local item_state="${next_state}"
-      local after_item="${DEFAULT_NEXT[${item_state}]:-}"
-      local item_count
-      item_count="$(echo "${items}" | jq 'length')"
-
-      local idx
-      for (( idx=0; idx<item_count; idx++ )); do
-        local item
-        item="$(echo "${items}" | jq -c ".[${idx}]")"
-
-        _discover_sources
-        local item_result=""
-        item_result="$(echo "${item}" | run_hooks "${item_state}")" && true || true
-
-        if [[ -n "${after_item}" ]]; then
-          _discover_sources
-          echo "${item_result}" | run_hooks "${after_item}" > /dev/null && true || true
-        fi
-      done
-
-      state="assemble"
-      context='{}'
-    else
-      state="${next_state}"
-    fi
-
-    # Count turns when entering send
-    if [[ "${state}" == "send" ]]; then
-      turns=$((turns + 1))
-    fi
-    if (( turns > HARNESS_MAX_TURNS )); then
-      break
+    # Safety valve
+    iterations=$((iterations + 1))
+    if (( iterations > HARNESS_MAX_TURNS * 3 )); then
+      _log "safety: exceeded max iterations"; break
     fi
   done
 
-  # Print output
-  if [[ -n "${output}" ]]; then
-    printf '%s\n' "${output}"
-  fi
-
-  if (( turns > HARNESS_MAX_TURNS )); then
-    _log "hit max turns (${HARNESS_MAX_TURNS})"
-  fi
+  # Print output from terminal state
+  local output
+  output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
+  [[ -n "${output}" ]] && printf '%s\n' "${output}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -486,21 +241,26 @@ main() {
   _require jq
   _require curl
   mkdir -p "${HARNESS_HOME}" "${HARNESS_SESSIONS}"
-  _resolve_provider
   _discover_sources
 
   # Export env vars so command scripts inherit them
   export HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_PROVIDER
   export HARNESS_MODEL HARNESS_MAX_TURNS HARNESS_LOG HARNESS_VERSION
 
-  local cmd="${1:-help}"; shift || true
-  # Normalize --help/-h to help
-  case "${cmd}" in --help|-h) cmd="help" ;; esac
+  local cmd="${1:-agent}"
+  case "${cmd}" in --help|-h) cmd="help" ;; --version|-v) cmd="version" ;; esac
 
   local cmd_path
   cmd_path="$(_find_command "${cmd}")"
-  [[ -n "${cmd_path}" ]] || _die "unknown command: ${cmd}. try 'harness help'"
-  exec "${cmd_path}" "$@"
+  if [[ -n "${cmd_path}" ]]; then
+    shift || true
+    exec "${cmd_path}" "$@"
+  else
+    # Not a known command — treat entire args as message to agent
+    cmd_path="$(_find_command "agent")"
+    [[ -n "${cmd_path}" ]] || _die "no agent command found"
+    exec "${cmd_path}" "$@"
+  fi
 }
 
 # Only run main when executed directly, not when sourced

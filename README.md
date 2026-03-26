@@ -23,14 +23,14 @@ export OPENAI_API_KEY="sk-..."        # or
 export ZAI_AUTH_TOKEN="..."
 
 # One-shot: run an agent to completion
-hs run "find all TODO comments in this repo and create a summary"
+hs "find all TODO comments in this repo and create a summary"
 
-# Interactive chat
-hs chat
+# Interactive REPL
+hs
 
 # Resume a session
 hs session list
-hs chat 20260324-143022-12345
+hs 20260324-143022-12345
 
 # See what's discovered from your current directory
 hs help
@@ -38,13 +38,13 @@ hs help
 
 ## How it works
 
-The core is a pure state machine (~500 lines). It does three things:
+The core is a state follower (~270 lines). It does three things:
 
 1. **Discovers plugins** by walking from CWD up to `$HOME`, collecting `.harness/` directories and bundled plugin packs. Provider plugins are scoped — only the active provider's plugin participates. Discovery reruns every loop iteration, so plugins can be added/removed at runtime.
 
-2. **Dispatches hooks** at each state. Hooks are executables sorted by numeric prefix, chained as a pipeline. Hook output is JSON that may include control fields (`next_state`, `items`, `output`) to drive state transitions.
+2. **Dispatches hooks** at each state. Hooks are executables sorted by numeric prefix, chained as a pipeline. Hook output is JSON; the `next_state` field drives state transitions.
 
-3. **Transitions**: `start → assemble → send → receive → (tool_exec → tool_done → assemble) → done`.
+3. **Follows states** until `next_state` is empty. The core has no built-in transitions — the topology `start → assemble → send → receive → (tool_exec → tool_done → assemble) → done` is emergent from which hooks exist and what `next_state` they emit.
 
 The loop has zero provider-specific knowledge. Message formats, API calls, response parsing — all of it lives in provider-specific hooks (`plugins/anthropic/`, `plugins/openai/`, `plugins/zai/`). Provider-agnostic behavior (tool execution, prompt loading, tool discovery) lives in `plugins/core/`. Additional bundled plugins provide subagent spawning (`plugins/subagents/`) and skill discovery (`plugins/skills/`).
 
@@ -59,7 +59,7 @@ my-command --describe  # one-line human description
 my-command [args...]   # execute the command
 ```
 
-Built-in commands: `run`, `chat`, `session`, `tools`, `hooks`, `help`, `version`. Override any built-in by placing a same-named executable in a higher-priority `commands/` directory.
+Built-in commands: `agent`, `session`, `tools`, `hooks`, `help`, `version`. The default command (bare `hs` or unrecognized first arg) is `agent`. Override any built-in by placing a same-named executable in a higher-priority `commands/` directory.
 
 ### Tools
 
@@ -79,18 +79,18 @@ Built-in tools: `bash`, `read_file`, `write_file`, `str_replace`, `list_dir`, `a
 
 Executables in `hooks.d/<stage>/` directories. Stages:
 
-| Stage | stdin | Default next | Purpose |
+| Stage | stdin | Emits next_state | Purpose |
 |---|---|---|---|
 | `start` | `{}` | `assemble` | Session initialization |
 | `assemble` | `{}` | `send` | Build the API request payload |
 | `send` | payload JSON | `receive` | Call the provider |
-| `receive` | API response | `done` | Parse response, save message, extract tool calls |
-| `tool_exec` | tool call JSON | `tool_done` | Execute a single tool (approval hooks go here too) |
-| `tool_done` | tool result JSON | `assemble` | Save tool result |
-| `error` | context JSON | `done` | Handle errors |
-| `done` | context JSON | — | Cleanup (terminal) |
+| `receive` | API response | `tool_exec` or `done` | Parse response, save message, extract tool calls |
+| `tool_exec` | context w/ `tool_calls` | `tool_done` | Pop and execute first tool call |
+| `tool_done` | tool result + remaining | `tool_exec` or `assemble` | Save result, loop or continue |
+| `error` | context JSON | _(empty = stop)_ | Handle errors |
+| `done` | context JSON | _(empty = stop)_ | Cleanup (terminal) |
 
-All hooks chain as a pipeline: each receives the previous hook's stdout on stdin. Any hook can set `next_state` in its JSON output to override the default transition.
+All hooks chain as a pipeline: each receives the previous hook's stdout on stdin. The last hook in each pipeline must emit `next_state` to declare the transition. Empty or absent `next_state` stops the loop.
 
 Naming convention: `NN-name` where NN controls execution order. Examples:
 - `10-messages` — runs first in the assemble stage

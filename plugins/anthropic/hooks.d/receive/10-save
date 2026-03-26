@@ -74,7 +74,7 @@ EOF
 
 # Return control JSON
 if [[ "${stop}" == "tool_calls" ]]; then
-  echo "${tool_items}" | jq '{next_state: "tool_exec", items: .}'
+  echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
 else
   jq -n --arg output "${text_output}" '{next_state: "done", output: $output}'
 fi

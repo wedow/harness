@@ -1,0 +1,186 @@
+#!/usr/bin/env bash
+# agent — run the agent (interactive or one-shot)
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "run the agent (interactive or one-shot)"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+
+# --- Provider resolution (inlined, private) ---
+
+# Unscoped walk: find all provider executables across all plugin dirs.
+# Unlike _discover_sources, this does NOT filter by HARNESS_PROVIDER.
+_discover_providers() {
+  local all_sources=()
+
+  local d
+  for d in "${HARNESS_ROOT}/plugins"/*/; do
+    [[ -d "${d}" ]] && all_sources+=("${d%/}")
+  done
+
+  local harness_dirs=()
+  local cur="${PWD}"
+  while true; do
+    [[ -d "${cur}/.harness" ]] && harness_dirs+=("${cur}/.harness")
+    [[ "${cur}" == "/" ]] && break
+    cur="$(dirname "${cur}")"
+  done
+  local found=0
+  for d in "${harness_dirs[@]:-}"; do
+    [[ "${d}" == "${HARNESS_HOME}" ]] && found=1
+  done
+  (( found )) || harness_dirs+=("${HARNESS_HOME}")
+
+  local i
+  for (( i=${#harness_dirs[@]}-1; i>=0; i-- )); do
+    local hd="${harness_dirs[i]}"
+    for d in "${hd}/plugins"/*/; do
+      [[ -d "${d}" ]] && all_sources+=("${d%/}")
+    done
+    all_sources+=("${hd}")
+  done
+
+  declare -A prov_map
+  local src
+  for src in "${all_sources[@]}"; do
+    [[ -d "${src}/providers" ]] || continue
+    local f
+    for f in "${src}/providers"/*; do
+      [[ -x "${f}" ]] || continue
+      prov_map["$(basename "${f}")"]="${f}"
+    done
+  done
+  for name in "${!prov_map[@]}"; do
+    echo "${name} ${prov_map[$name]}"
+  done
+}
+
+# Find provider binary by name using scoped sources
+_find_provider() {
+  local name="$1"
+  _discover_sources
+  local i
+  for (( i=${#_HARNESS_SOURCES[@]}-1; i>=0; i-- )); do
+    [[ -x "${_HARNESS_SOURCES[i]}/providers/${name}" ]] && {
+      echo "${_HARNESS_SOURCES[i]}/providers/${name}"
+      return 0
+    }
+  done
+  return 1
+}
+
+# Auto-detect provider if unset, then load its defaults
+_resolve_provider() {
+  if [[ -z "${HARNESS_PROVIDER}" ]]; then
+    local name path
+    while read -r name path; do
+      [[ -z "${name}" ]] && continue
+      if "${path}" --ready 2>/dev/null; then
+        HARNESS_PROVIDER="${name}"
+        break
+      fi
+    done < <(_discover_providers | sort)
+  fi
+  [[ -z "${HARNESS_PROVIDER}" ]] && return 0
+  local provider_path
+  provider_path="$(_find_provider "${HARNESS_PROVIDER}")" || return 0
+  local key val
+  while IFS='=' read -r key val; do
+    [[ -z "${key}" ]] && continue
+    case "${key}" in
+      model) [[ -z "${HARNESS_MODEL}" ]] && HARNESS_MODEL="${val}" ;;
+    esac
+  done < <("${provider_path}" --defaults 2>/dev/null || true)
+  return 0
+}
+
+# --- Session helpers (inlined, private) ---
+
+_new_session() {
+  local id; id="$(date +%Y%m%d-%H%M%S)-$$"
+  local dir="${HARNESS_SESSIONS}/${id}"
+  mkdir -p "${dir}/messages"
+  cat > "${dir}/session.md" <<EOF
+---
+id: ${id}
+model: ${HARNESS_MODEL}
+provider: ${HARNESS_PROVIDER}
+created: $(date -Iseconds)
+cwd: ${PWD}
+---
+EOF
+  echo "${dir}"
+}
+
+_next_seq() {
+  local dir="$1"
+  local last; last="$(ls -1 "${dir}/messages/" 2>/dev/null | sort -n | tail -1)"
+  if [[ -z "${last}" ]]; then echo "0001"
+  else printf '%04d' $(( 10#${last%%-*} + 1 )); fi
+}
+
+_save_message() {
+  local dir="$1" content="$2"
+  local seq; seq="$(_next_seq "${dir}")"
+  cat > "${dir}/messages/${seq}-user.md" <<EOF
+---
+role: user
+seq: ${seq}
+timestamp: $(date -Iseconds)
+---
+${content}
+EOF
+}
+
+# --- Main ---
+
+_resolve_provider
+
+# Determine mode
+session_dir=""
+message=""
+mode=""
+
+if [[ -n "${1:-}" && -d "${HARNESS_SESSIONS}/${1}" ]]; then
+  # Resume existing session
+  session_dir="${HARNESS_SESSIONS}/${1}"
+  mode="repl"
+elif (( $# > 0 )); then
+  # One-shot with args
+  message="$*"
+  mode="oneshot"
+elif [[ ! -t 0 ]]; then
+  # One-shot from stdin
+  message="$(cat)"
+  mode="oneshot"
+else
+  # Interactive REPL, new session
+  mode="repl"
+fi
+
+# Create session if needed
+if [[ -z "${session_dir}" ]]; then
+  session_dir="$(_new_session)"
+  echo "session: $(basename "${session_dir}")" >&2
+fi
+
+# One-shot
+if [[ "${mode}" == "oneshot" ]]; then
+  _save_message "${session_dir}" "${message}"
+  agent_loop "${session_dir}"
+  exit 0
+fi
+
+# REPL
+while true; do
+  printf '\n\033[1;36mYou:\033[0m '
+  IFS= read -r input || break
+  [[ -z "${input}" ]] && continue
+  [[ "${input}" == "/quit" || "${input}" == "/exit" ]] && break
+  [[ "${input}" == "/session" ]] && { echo "${session_dir}"; continue; }
+
+  _save_message "${session_dir}" "${input}"
+  printf '\033[1;33mAgent:\033[0m '
+  agent_loop "${session_dir}"
+  echo
+done

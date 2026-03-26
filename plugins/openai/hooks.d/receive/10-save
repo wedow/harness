@@ -82,7 +82,7 @@ MSGEOF
 
 # Return control JSON for the state machine
 if [[ "${stop}" == "tool_calls" ]]; then
-  jq -n --argjson items "${items}" '{next_state: "tool_exec", items: $items}'
+  jq -n --argjson items "${items}" '{next_state: "tool_exec", tool_calls: $items}'
 else
   output="${content}"
   jq -n --arg output "${output}" '{next_state: "done", output: $output}'

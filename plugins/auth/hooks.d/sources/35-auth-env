@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# 35-auth-env — merge .auth.json from discovered sources into a cache for providers
+set -euo pipefail
+
+input="$(cat)"
+
+merged="{}"
+while IFS= read -r src; do
+  [[ -f "${src}/.auth.json" ]] || continue
+  merged="$(jq -s '.[0] * .[1]' <(echo "${merged}") "${src}/.auth.json")"
+done < <(echo "${input}" | jq -r '.sources[]')
+
+echo "${merged}" > "${HARNESS_HOME}/.auth-cache.json"
+chmod 600 "${HARNESS_HOME}/.auth-cache.json"
+
+echo "${input}"

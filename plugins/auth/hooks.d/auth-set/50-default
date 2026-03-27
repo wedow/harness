@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 50-default — generic credential prompt (fallback when no provider-specific hook exists)
+set -euo pipefail
+
+input="$(cat)"
+
+# If a provider-specific hook already produced a credential, pass through
+if echo "${input}" | jq -e 'has("type")' &>/dev/null; then
+  echo "${input}"
+  exit 0
+fi
+
+printf "API key for %s: " "${HARNESS_AUTH_PROVIDER}" > /dev/tty
+read -rs raw_key < /dev/tty
+echo > /dev/tty
+[[ -z "${raw_key}" ]] && { echo "aborted" >&2; exit 1; }
+jq -n --arg k "${raw_key}" '{"type":"api_key","key":$k}'

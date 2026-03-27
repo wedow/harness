@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# auth — manage provider credentials
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "manage provider credentials"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+
+_auth_file() {
+  if [[ "${1:-}" == "--local" ]]; then
+    local cur="${PWD}"
+    while [[ "${cur}" != "/" ]]; do
+      if [[ -d "${cur}/.harness" && "${cur}/.harness" != "${HARNESS_HOME}" ]]; then
+        echo "${cur}/.harness/.auth.json"
+        return
+      fi
+      cur="$(dirname "${cur}")"
+    done
+    _die "no local .harness/ found"
+  else
+    echo "${HARNESS_HOME}/.auth.json"
+  fi
+}
+
+_read_auth() {
+  local file="$1"
+  [[ -f "${file}" ]] && cat "${file}" || echo '{}'
+}
+
+subcmd="${1:-list}"; shift || true
+
+case "${subcmd}" in
+  set)
+    provider="${1:?usage: auth set <provider> [--local]}"
+    shift || true
+    local_flag=""
+    [[ "${1:-}" == "--local" ]] && { local_flag="--local"; shift || true; }
+
+    export HARNESS_AUTH_PROVIDER="${provider}"
+    _refresh_sources
+    cred="$(echo '{}' | call auth-set)" || exit 1
+    echo "${cred}" | jq -e '.' >/dev/null 2>&1 || _die "invalid credential from auth-set hooks"
+
+    auth_file="$(_auth_file "${local_flag}")"
+    existing="$(_read_auth "${auth_file}")"
+    updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
+      '.[$p] = ((.[$p] // []) + [$c])')"
+    mkdir -p "$(dirname "${auth_file}")"
+    echo "${updated}" > "${auth_file}"
+    chmod 600 "${auth_file}"
+    echo "saved credential for ${provider}" >&2
+    ;;
+
+  list)
+    provider="${1:-}"
+    _refresh_sources
+    cache="${HARNESS_HOME}/.auth-cache.json"
+    [[ -f "${cache}" ]] || { echo "(no credentials configured)"; exit 0; }
+
+    if [[ -n "${provider}" ]]; then
+      jq -r --arg p "${provider}" '
+        (.[$p] // []) | to_entries[] |
+        "  [\(.key)] type=\(.value.type // "unknown") key=\(.value.key // .value.token // "?" |
+          if length > 8 then .[:4] + "..." + .[-4:] else "****" end)"
+      ' "${cache}"
+    else
+      jq -r '
+        to_entries[] | .key as $p | (.value // []) | to_entries[] |
+        "\($p) [\(.key)] type=\(.value.type // "unknown") key=\(.value.key // .value.token // "?" |
+          if length > 8 then .[:4] + "..." + .[-4:] else "****" end)"
+      ' "${cache}"
+    fi
+    ;;
+
+  rm)
+    provider="${1:?usage: auth rm <provider> <index> [--local]}"
+    index="${2:?usage: auth rm <provider> <index> [--local]}"
+    shift 2
+    local_flag=""
+    [[ "${1:-}" == "--local" ]] && local_flag="--local"
+
+    auth_file="$(_auth_file "${local_flag}")"
+    [[ -f "${auth_file}" ]] || _die "no auth file at ${auth_file}"
+    updated="$(jq --arg p "${provider}" --argjson i "${index}" 'del(.[$p][$i])' "${auth_file}")"
+    echo "${updated}" > "${auth_file}"
+    echo "removed ${provider}[${index}]" >&2
+    ;;
+
+  *)
+    _die "unknown auth command: ${subcmd} (try: set, list, rm)"
+    ;;
+esac

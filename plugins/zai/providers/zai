@@ -4,7 +4,12 @@
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "z.ai (Anthropic-compatible)"; exit 0; }
-[[ "${1:-}" == "--ready" ]] && { [[ -n "${ZAI_AUTH_TOKEN:-}" ]]; exit $?; }
+[[ "${1:-}" == "--ready" ]] && {
+  [[ -n "${ZAI_AUTH_TOKEN:-}" ]] && exit 0
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && jq -e '.zai | length > 0' "${cache}" &>/dev/null
+  exit $?
+}
 [[ "${1:-}" == "--defaults" ]] && { echo "model=glm-5-turbo"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ZAI_AUTH_TOKEN        auth token (required)
@@ -13,7 +18,11 @@ ZAI_MAX_TOKENS        max response tokens (8192)
 ENVEOF
 exit 0; }
 
-ZAI_AUTH_TOKEN="${ZAI_AUTH_TOKEN:?ZAI_AUTH_TOKEN not set}"
+if [[ -z "${ZAI_AUTH_TOKEN:-}" ]]; then
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && ZAI_AUTH_TOKEN="$(jq -r '.zai[0].key // .zai[0].token // empty' "${cache}")"
+fi
+ZAI_AUTH_TOKEN="${ZAI_AUTH_TOKEN:?ZAI_AUTH_TOKEN not set — run: hs auth set zai}"
 ZAI_API_URL="${ZAI_API_URL:-https://api.z.ai/api/anthropic/v1/messages}"
 ZAI_MAX_TOKENS="${ZAI_MAX_TOKENS:-${ANTHROPIC_MAX_TOKENS:-8192}}"
 

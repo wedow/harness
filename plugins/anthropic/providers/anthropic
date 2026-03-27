@@ -4,7 +4,12 @@
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "Anthropic Messages API"; exit 0; }
-[[ "${1:-}" == "--ready" ]] && { [[ -n "${ANTHROPIC_API_KEY:-}" ]]; exit $?; }
+[[ "${1:-}" == "--ready" ]] && {
+  [[ -n "${ANTHROPIC_API_KEY:-}" ]] && exit 0
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && jq -e '.anthropic | length > 0' "${cache}" &>/dev/null
+  exit $?
+}
 [[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ANTHROPIC_API_KEY     API key (required)
@@ -14,7 +19,11 @@ ANTHROPIC_MAX_TOKENS  max response tokens (8192)
 ENVEOF
 exit 0; }
 
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set}"
+if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && ANTHROPIC_API_KEY="$(jq -r '.anthropic[0].key // empty' "${cache}")"
+fi
+ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set — run: hs auth set anthropic}"
 ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
 ANTHROPIC_API_VERSION="${ANTHROPIC_API_VERSION:-2023-06-01}"
 ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-8192}"

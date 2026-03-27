@@ -6,8 +6,10 @@ set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "OpenAI-compatible chat completions API"; exit 0; }
 [[ "${1:-}" == "--ready" ]] && {
-  # Ready if we have an API key OR a custom URL (local servers don't need keys)
-  [[ -n "${OPENAI_API_KEY:-}" || -n "${OPENAI_API_URL:-}" ]]; exit $?
+  [[ -n "${OPENAI_API_KEY:-}" || -n "${OPENAI_API_URL:-}" ]] && exit 0
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && jq -e '.openai | length > 0' "${cache}" &>/dev/null
+  exit $?
 }
 [[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-4o"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
@@ -58,7 +60,11 @@ request="$(jq -n \
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
-# Build auth header if API key is set
+# Auth: env var wins, then auth cache, then no auth (local servers)
+if [[ -z "${OPENAI_API_KEY:-}" ]]; then
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && OPENAI_API_KEY="$(jq -r '.openai[0].key // empty' "${cache}")"
+fi
 auth_args=()
 if [[ -n "${OPENAI_API_KEY:-}" ]]; then
   auth_args=(-H "Authorization: Bearer ${OPENAI_API_KEY}")

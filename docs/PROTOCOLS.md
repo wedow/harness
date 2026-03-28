@@ -132,7 +132,7 @@ Key-value pairs, one per line. Harness uses these to populate unset `HARNESS_` v
 | `model` | `HARNESS_MODEL` |
 
 ```bash
-[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
+[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
 ```
 
 ### `--env`
@@ -334,7 +334,7 @@ Session messages are stored as markdown files with YAML frontmatter. The format 
 role: assistant
 seq: 0002
 timestamp: 2026-03-24T16:05:32-04:00
-model: claude-sonnet-4-20250514
+model: claude-sonnet-4-6
 provider: anthropic
 stop: tool_calls
 tokens_in: 1200

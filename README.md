@@ -111,7 +111,7 @@ Executables in `providers/` directories. Receive the assembled payload JSON on s
 ```bash
 my-provider --describe  # one-line description
 my-provider --ready     # exit 0 if credentials are configured
-my-provider --defaults  # key=value pairs (e.g. model=claude-sonnet-4-20250514)
+my-provider --defaults  # key=value pairs (e.g. model=claude-sonnet-4-6)
 my-provider --env       # list supported env vars with descriptions
 ```
 

@@ -9,7 +9,7 @@ set -euo pipefail
   [[ -f "${cache}" ]] && jq -e '.claude | length > 0' "${cache}" &>/dev/null
   exit $?
 }
-[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
+[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ANTHROPIC_MAX_TOKENS  max response tokens (8192)
 ENVEOF

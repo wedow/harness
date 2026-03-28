@@ -10,7 +10,7 @@ set -euo pipefail
   [[ -f "${cache}" ]] && jq -e '.anthropic | length > 0' "${cache}" &>/dev/null
   exit $?
 }
-[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-20250514"; exit 0; }
+[[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 ANTHROPIC_API_KEY     API key (required)
 ANTHROPIC_API_URL     API endpoint (https://api.anthropic.com/v1/messages)

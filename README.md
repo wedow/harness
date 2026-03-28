@@ -195,7 +195,7 @@ Each session is a directory of markdown files:
 
 ```
 sessions/20260324-143022-12345/
-  session.md                         # metadata (model, provider, cwd, timestamps)
+  session.conf                       # metadata (model, provider, cwd, timestamps)
   messages/
     0001-user.md                     # user message
     0002-assistant.md                # assistant response (with tool_call blocks)

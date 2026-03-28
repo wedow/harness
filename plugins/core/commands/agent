@@ -77,14 +77,12 @@ _new_session() {
   local id; id="$(date +%Y%m%d-%H%M%S)-$$"
   local dir="${HARNESS_SESSIONS}/${id}"
   mkdir -p "${dir}/messages"
-  cat > "${dir}/session.md" <<EOF
----
-id: ${id}
-model: ${HARNESS_MODEL}
-provider: ${HARNESS_PROVIDER}
-created: $(date -Iseconds)
-cwd: ${PWD}
----
+  cat > "${dir}/session.conf" <<EOF
+id=${id}
+model=${HARNESS_MODEL}
+provider=${HARNESS_PROVIDER}
+created=$(date -Iseconds)
+cwd=${PWD}
 EOF
   echo "${dir}"
 }

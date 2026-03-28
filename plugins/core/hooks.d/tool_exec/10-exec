@@ -10,11 +10,10 @@ tool_name="$(echo "${data}" | jq -r '.tool_calls[0].name')"
 input="$(echo "${data}" | jq -c '.tool_calls[0].input')"
 remaining="$(echo "${data}" | jq -c '.tool_calls[1:]')"
 
-# Source session env if available (picks up HARNESS_CWD etc.)
-if [[ -f "${HARNESS_SESSION}/.env" ]]; then
-  set -a
-  source "${HARNESS_SESSION}/.env"
-  set +a
+# Read HARNESS_CWD from session config
+if [[ -z "${HARNESS_CWD:-}" && -f "${HARNESS_SESSION}/session.conf" ]]; then
+  cwd="$(sed -n 's/^cwd=//p' "${HARNESS_SESSION}/session.conf")"
+  [[ -n "${cwd}" ]] && export HARNESS_CWD="${cwd}"
 fi
 
 # Discover tool binary from HARNESS_SOURCES (highest priority = last in list)

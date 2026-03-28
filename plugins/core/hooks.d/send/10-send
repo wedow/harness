@@ -12,6 +12,7 @@ _find_bin() {
   for (( i=${#sources[@]}-1; i>=0; i-- )); do
     [[ -x "${sources[i]}/providers/${name}" ]] && { echo "${sources[i]}/providers/${name}"; return; }
   done
+  return 0
 }
 
 _find_conf() {
@@ -19,6 +20,7 @@ _find_conf() {
   for (( i=${#sources[@]}-1; i>=0; i-- )); do
     [[ -f "${sources[i]}/providers/${name}.conf" ]] && { echo "${sources[i]}/providers/${name}.conf"; return; }
   done
+  return 0
 }
 
 # Resolve provider binary — direct or via variant conf
@@ -54,11 +56,15 @@ trap 'rm -f "${err_file}"' EXIT
 
 if response="$(echo "${payload}" | "${provider_bin}" 2>"${err_file}")"; then
   cat "${err_file}" >> "${HARNESS_LOG}"
-  echo "${response}" | jq '. + {next_state: "receive"}'
+  if ! echo "${response}" | jq '. + {next_state: "receive"}' 2>/dev/null; then
+    echo "provider returned invalid JSON: ${response:0:200}" >&2
+    jq -n --arg msg "provider returned invalid JSON" '{error: $msg}'
+    exit 1
+  fi
 else
   rc=$?
   err="$(cat "${err_file}")"
-  [[ -n "${err}" ]] && echo "${err}" >> "${HARNESS_LOG}"
+  [[ -n "${err}" ]] && { echo "${err}" >> "${HARNESS_LOG}"; echo "${err}" >&2; }
   jq -n --arg msg "${err:-provider exited ${rc}}" '{error: $msg}'
   exit "${rc}"
 fi

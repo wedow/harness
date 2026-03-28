@@ -22,6 +22,9 @@ export ANTHROPIC_API_KEY="sk-ant-..."  # or
 export OPENAI_API_KEY="sk-..."        # or use a variant
 export GROQ_API_KEY="gsk_..."
 
+# Or use your ChatGPT subscription (Plus/Pro/Team/Enterprise)
+hs auth set chatgpt                    # opens browser for OAuth login
+
 # One-shot: run an agent to completion
 hs "find all TODO comments in this repo and create a summary"
 
@@ -111,7 +114,7 @@ my-provider --env       # list supported env vars with descriptions
 
 If `HARNESS_PROVIDER` is not set, harness auto-selects the first discovered provider whose `--ready` exits 0, and loads its `--defaults` for unset vars like `HARNESS_MODEL`.
 
-Built-in: `anthropic`, `openai`. Each lives in its own provider plugin directory with provider-specific hooks for message assembly and response parsing. The `openai` provider works with any OpenAI-compatible API (ollama, llama.cpp, vLLM) — set `OPENAI_API_URL` to point at a local server.
+Built-in: `anthropic`, `openai`, `chatgpt`. Each lives in its own provider plugin directory with provider-specific hooks for message assembly and response parsing. The `openai` provider works with any OpenAI-compatible API (ollama, llama.cpp, vLLM) — set `OPENAI_API_URL` to point at a local server. The `chatgpt` provider authenticates via OAuth2 PKCE and uses ChatGPT subscription quotas (Plus/Pro/Team/Enterprise) — no API key needed.
 
 #### Provider variants
 
@@ -137,6 +140,10 @@ HARNESS_PROVIDER=groq hs "hello"
 # Or store credentials persistently
 hs auth set groq
 HARNESS_PROVIDER=groq hs "hello"
+
+# Use ChatGPT subscription (no API key needed)
+hs auth set chatgpt              # opens browser for OAuth login
+HARNESS_PROVIDER=chatgpt hs "hello"
 ```
 
 See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plugin types.

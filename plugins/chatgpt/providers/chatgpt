@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+# chatgpt — provider plugin for the ChatGPT Responses API with OAuth auth.
+# Receives assembled payload JSON on stdin, outputs the API response.
+set -euo pipefail
+
+[[ "${1:-}" == "--describe" ]] && { echo "ChatGPT Responses API (OAuth)"; exit 0; }
+[[ "${1:-}" == "--ready" ]] && {
+  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+  [[ -f "${cache}" ]] && jq -e '.chatgpt | length > 0' "${cache}" &>/dev/null
+  exit $?
+}
+[[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-5.4"; exit 0; }
+[[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
+CHATGPT_MODEL       model override (gpt-5.4)
+ENVEOF
+exit 0; }
+
+cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+[[ -f "${cache}" ]] || { echo "no auth cache — run: hs auth set chatgpt" >&2; exit 1; }
+
+# Read credentials
+access_token="$(jq -r '.chatgpt[0].access_token // empty' "${cache}")"
+refresh_token="$(jq -r '.chatgpt[0].refresh_token // empty' "${cache}")"
+account_id="$(jq -r '.chatgpt[0].account_id // empty' "${cache}")"
+expires_at="$(jq -r '.chatgpt[0].expires_at // "0"' "${cache}")"
+
+[[ -z "${access_token}" ]] && { echo "no chatgpt access_token — run: hs auth set chatgpt" >&2; exit 1; }
+
+# Refresh token if expired
+now="$(date +%s)"
+if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires_at}" ]]; then
+  token_response="$(curl -sS -X POST "https://auth.openai.com/oauth/token" \
+    -H "Content-Type: application/json" \
+    -d "$(jq -n \
+      --arg client_id "app_EMoamEEZ73f0CkXaXp7hrann" \
+      --arg refresh_token "${refresh_token}" \
+      '{client_id: $client_id, grant_type: "refresh_token", refresh_token: $refresh_token}'
+    )" --max-time 30)" || { echo "token refresh failed" >&2; exit 1; }
+
+  new_access="$(echo "${token_response}" | jq -r '.access_token // empty')"
+  [[ -z "${new_access}" ]] && { echo "token refresh returned no access_token" >&2; exit 1; }
+
+  new_refresh="$(echo "${token_response}" | jq -r '.refresh_token // empty')"
+  new_id_token="$(echo "${token_response}" | jq -r '.id_token // empty')"
+
+  # Parse new expiry from id_token JWT
+  new_expires_at="0"
+  if [[ -n "${new_id_token}" && "${new_id_token}" != "null" ]]; then
+    jwt_payload="$(echo "${new_id_token}" | cut -d. -f2 | sed 'y|-_|+/|' | awk '{while(length%4)$0=$0"=";print}' | base64 -d 2>/dev/null)" || true
+    if [[ -n "${jwt_payload}" ]]; then
+      new_expires_at="$(echo "${jwt_payload}" | jq -r '.exp // "0"' 2>/dev/null)" || new_expires_at="0"
+    fi
+  fi
+
+  access_token="${new_access}"
+  [[ -n "${new_refresh}" && "${new_refresh}" != "null" ]] && refresh_token="${new_refresh}"
+
+  # Update auth cache
+  updated="$(jq \
+    --arg at "${access_token}" \
+    --arg rt "${refresh_token}" \
+    --arg it "${new_id_token}" \
+    --arg exp "${new_expires_at}" \
+    '.chatgpt[0].access_token = $at
+     | .chatgpt[0].refresh_token = $rt
+     | .chatgpt[0].id_token = $it
+     | .chatgpt[0].expires_at = $exp' "${cache}")"
+  echo "${updated}" > "${cache}"
+  chmod 600 "${cache}"
+  echo "refreshed chatgpt token" >&2
+fi
+
+payload="$(cat)"
+
+model="$(echo "${payload}" | jq -r '.model // ""')"
+[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
+
+system="$(echo "${payload}" | jq -r '.system // ""')"
+input_items="$(echo "${payload}" | jq -c '.messages // []')"
+tools="$(echo "${payload}" | jq -c '.tools // []')"
+
+# Translate tool schemas: canonical (name/description/input_schema) → Responses API format
+responses_tools="$(echo "${tools}" | jq -c '[.[] | {
+  type: "function",
+  name: .name,
+  description: .description,
+  parameters: .input_schema
+}]')"
+
+# Build the request
+request="$(jq -n \
+  --arg model "${model}" \
+  --arg instructions "${system}" \
+  --argjson input "${input_items}" \
+  --argjson tools "${responses_tools}" \
+  '{model: $model, instructions: $instructions, input: $input, store: false, stream: true}
+   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
+)"
+
+# Stream and extract the final response.completed event
+sse_output="$(curl -sS "https://chatgpt.com/backend-api/codex/responses" \
+  -H "Authorization: Bearer ${access_token}" \
+  -H "ChatGPT-Account-ID: ${account_id}" \
+  -H "Content-Type: application/json" \
+  -d "${request}" \
+  --max-time 300
+)"
+
+# Check for non-SSE error responses (plain JSON)
+if echo "${sse_output}" | jq -e '.error // .detail' &>/dev/null 2>&1; then
+  error_msg="$(echo "${sse_output}" | jq -r '.error.message // .detail // "unknown error"' 2>/dev/null)"
+  echo "chatgpt API error: ${error_msg}" >&2
+  exit 1
+fi
+
+# Parse SSE: extract the response object from the response.completed event
+response="$(echo "${sse_output}" | grep '^data: ' | sed 's/^data: //' | \
+  jq -c 'select(.type == "response.completed") | .response' 2>/dev/null | tail -1)"
+
+if [[ -z "${response}" ]]; then
+  echo "no response.completed event in stream" >&2
+  exit 1
+fi
+
+echo "${response}"

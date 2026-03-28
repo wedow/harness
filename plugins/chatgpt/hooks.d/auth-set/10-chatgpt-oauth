@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+# 10-chatgpt-oauth — OAuth2 PKCE login for ChatGPT
+set -euo pipefail
+
+input="$(cat)"
+
+# Pass through if another hook already produced a credential
+if echo "${input}" | jq -e 'has("type")' &>/dev/null; then
+  echo "${input}"
+  exit 0
+fi
+
+# Only handle chatgpt provider
+[[ "${HARNESS_AUTH_PROVIDER:-}" == "chatgpt" ]] || { echo "${input}"; exit 0; }
+
+# --- constants ---
+client_id="app_EMoamEEZ73f0CkXaXp7hrann"
+redirect_uri="http://localhost:1455/auth/callback"
+auth_url="https://auth.openai.com/oauth/authorize"
+token_url="https://auth.openai.com/oauth/token"
+scope="openid profile email offline_access api.connectors.read api.connectors.invoke"
+port=1455
+
+# --- helpers ---
+base64url_encode() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+base64url_decode() { sed 'y|-_|+/|' | awk '{while(length%4)$0=$0"=";print}' | base64 -d; }
+
+cleanup() {
+  [[ -n "${tmpdir:-}" ]] && rm -rf "${tmpdir}"
+  [[ -n "${nc_pid:-}" ]] && kill "${nc_pid}" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# --- PKCE ---
+code_verifier="$(openssl rand 64 | base64url_encode)"
+code_challenge="$(printf '%s' "${code_verifier}" | openssl dgst -sha256 -binary | base64url_encode)"
+state="$(openssl rand 32 | base64url_encode)"
+
+# --- netcat listener ---
+# Strategy: use a FIFO so netcat can both receive the request AND send a response.
+# netcat reads its response from the fifo and writes the incoming request to a file.
+# We poll for the request to arrive, then write the response into the fifo.
+tmpdir="$(mktemp -d)"
+fifo="${tmpdir}/fifo"
+mkfifo "${fifo}"
+
+cat "${fifo}" | nc -l -p "${port}" > "${tmpdir}/request" &
+nc_pid=$!
+
+# --- open browser ---
+url="${auth_url}?response_type=code"
+url+="&client_id=${client_id}"
+url+="&redirect_uri=$(printf '%s' "${redirect_uri}" | jq -sRr @uri)"
+url+="&scope=$(printf '%s' "${scope}" | jq -sRr @uri)"
+url+="&code_challenge=${code_challenge}"
+url+="&code_challenge_method=S256"
+url+="&state=${state}"
+url+="&id_token_add_organizations=true"
+url+="&codex_cli_simplified_flow=true"
+url+="&originator=codex_cli_rs"
+
+echo "opening browser for ChatGPT login..." >&2
+echo "${url}" >&2
+
+if command -v xdg-open &>/dev/null; then
+  xdg-open "${url}" >/dev/null 2>&1 &
+elif command -v open &>/dev/null; then
+  open "${url}" >/dev/null 2>&1 &
+fi
+
+echo "waiting for OAuth callback on port ${port}..." >&2
+
+# --- wait for callback, then serve response ---
+# Poll until the request file has content (browser hit the endpoint)
+while [[ ! -s "${tmpdir}/request" ]]; do
+  # Check netcat is still alive
+  kill -0 "${nc_pid}" 2>/dev/null || break
+  sleep 0.1
+done
+
+# Send HTTP response through the fifo — this unblocks netcat to respond and exit
+response_body="<html><body><h2>Login successful</h2><p>You can close this tab.</p></body></html>"
+printf 'HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %d\r\nConnection: close\r\n\r\n%s' \
+  "${#response_body}" "${response_body}" > "${fifo}"
+
+wait "${nc_pid}" 2>/dev/null || true
+nc_pid=""
+
+request="$(cat "${tmpdir}/request")"
+[[ -z "${request}" ]] && { echo "no callback received" >&2; exit 1; }
+
+# Parse query string from GET line: GET /auth/callback?code=...&state=... HTTP/1.1
+query="$(echo "${request}" | head -1 | sed -n 's|^GET /auth/callback?\([^ ]*\) HTTP.*|\1|p')"
+[[ -z "${query}" ]] && { echo "failed to parse callback request" >&2; exit 1; }
+
+# Extract code and state from query string
+callback_code=""
+callback_state=""
+IFS='&' read -ra params <<< "${query}"
+for param in "${params[@]}"; do
+  case "${param}" in
+    code=*)  callback_code="${param#code=}" ;;
+    state=*) callback_state="${param#state=}" ;;
+  esac
+done
+
+[[ -z "${callback_code}" ]] && { echo "no authorization code in callback" >&2; exit 1; }
+[[ "${callback_state}" != "${state}" ]] && { echo "state mismatch — possible CSRF" >&2; exit 1; }
+
+echo "received authorization code" >&2
+
+# --- exchange code for tokens ---
+token_response="$(curl -sS -X POST "${token_url}" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "grant_type=authorization_code" \
+  -d "code=${callback_code}" \
+  -d "redirect_uri=${redirect_uri}" \
+  -d "client_id=${client_id}" \
+  -d "code_verifier=${code_verifier}" \
+  --max-time 30)"
+if [[ -z "${token_response}" ]] || echo "${token_response}" | jq -e '.error' &>/dev/null; then
+  echo "token exchange failed: ${token_response}" >&2
+  exit 1
+fi
+
+access_token="$(echo "${token_response}" | jq -r '.access_token')"
+refresh_token="$(echo "${token_response}" | jq -r '.refresh_token')"
+id_token="$(echo "${token_response}" | jq -r '.id_token')"
+
+[[ "${access_token}" == "null" || -z "${access_token}" ]] && { echo "no access_token in token response" >&2; exit 1; }
+
+# --- parse JWT claims from id_token ---
+claims='{}'
+if [[ "${id_token}" != "null" && -n "${id_token}" ]]; then
+  # JWT: header.payload.signature — decode the payload (second segment)
+  payload="$(echo "${id_token}" | cut -d. -f2 | base64url_decode 2>/dev/null)" || true
+  if [[ -n "${payload}" ]] && echo "${payload}" | jq -e '.' &>/dev/null; then
+    claims="${payload}"
+  fi
+fi
+
+account_id="$(echo "${claims}" | jq -r '.["https://api.openai.com/auth"].chatgpt_account_id // empty')"
+plan_type="$(echo "${claims}" | jq -r '.["https://api.openai.com/auth"].chatgpt_plan_type // empty')"
+email="$(echo "${claims}" | jq -r '.email // empty')"
+expires_at="$(echo "${claims}" | jq -r '.exp // empty')"
+
+[[ -n "${email}" ]] && echo "logged in as ${email}" >&2
+[[ -n "${plan_type}" ]] && echo "plan: ${plan_type}" >&2
+
+# --- output credential JSON ---
+jq -n \
+  --arg access_token "${access_token}" \
+  --arg refresh_token "${refresh_token}" \
+  --arg id_token "${id_token}" \
+  --arg account_id "${account_id}" \
+  --arg plan_type "${plan_type}" \
+  --arg email "${email}" \
+  --arg expires_at "${expires_at}" \
+  '{
+    type: "oauth",
+    access_token: $access_token,
+    refresh_token: $refresh_token,
+    id_token: $id_token,
+    account_id: $account_id,
+    plan_type: $plan_type,
+    email: $email,
+    expires_at: $expires_at
+  }'

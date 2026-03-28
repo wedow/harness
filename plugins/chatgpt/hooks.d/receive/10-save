@@ -1,0 +1,98 @@
+#!/usr/bin/env bash
+# 10-save — parse Responses API response, save canonical message, return control JSON.
+# Receives raw ChatGPT Responses API JSON on stdin.
+set -euo pipefail
+
+response="$(cat)"
+msg_dir="${HARNESS_SESSION}/messages"
+mkdir -p "${msg_dir}"
+
+# Determine next sequence number
+last="$(ls -1 "${msg_dir}/" 2>/dev/null | sort -n | tail -1)"
+if [[ -z "${last}" ]]; then
+  seq="0001"
+else
+  seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"
+fi
+
+# Extract metadata
+model="$(echo "${response}" | jq -r '.model // ""')"
+status="$(echo "${response}" | jq -r '.status // "completed"')"
+tokens_in="$(echo "${response}" | jq -r '.usage.input_tokens // 0')"
+tokens_out="$(echo "${response}" | jq -r '.usage.output_tokens // 0')"
+
+# Build body and tool items from the output array
+body=""
+text_output=""
+tool_items="[]"
+has_tool_calls=false
+
+while IFS= read -r item; do
+  [[ -z "${item}" ]] && continue
+  item_type="$(echo "${item}" | jq -r '.type')"
+
+  case "${item_type}" in
+    message)
+      # Extract text from content array
+      while IFS= read -r content_block; do
+        [[ -z "${content_block}" ]] && continue
+        ctype="$(echo "${content_block}" | jq -r '.type')"
+        case "${ctype}" in
+          output_text)
+            text="$(echo "${content_block}" | jq -r '.text')"
+            body+="${text}"$'\n'
+            text_output+="${text}"
+            ;;
+        esac
+      done <<< "$(echo "${item}" | jq -c '.content[]')"
+      ;;
+    function_call)
+      has_tool_calls=true
+      tc_id="$(echo "${item}" | jq -r '.call_id')"
+      tc_name="$(echo "${item}" | jq -r '.name')"
+      tc_args="$(echo "${item}" | jq -r '.arguments')"
+
+      [[ -n "${body}" ]] && body+=$'\n'
+      body+=$'\n```tool_call id='"${tc_id}"' name='"${tc_name}"
+      body+=$'\n'"${tc_args}"
+      body+=$'\n```'
+
+      tool_items="$(echo "${tool_items}" | jq \
+        --arg id "${tc_id}" --arg name "${tc_name}" --argjson input "${tc_args}" \
+        '. + [{id: $id, name: $name, input: $input}]')"
+      ;;
+  esac
+done <<< "$(echo "${response}" | jq -c '.output[]?' 2>/dev/null)"
+
+# Map status to canonical stop reason
+if ${has_tool_calls}; then
+  stop="tool_calls"
+else
+  case "${status}" in
+    completed)  stop="end" ;;
+    incomplete) stop="length" ;;
+    *)          stop="end" ;;
+  esac
+fi
+
+# Write the canonical message file
+cat > "${msg_dir}/${seq}-assistant.md" <<EOF
+---
+role: assistant
+seq: ${seq}
+timestamp: $(date -Iseconds)
+model: ${model}
+provider: ${HARNESS_PROVIDER}
+stop: ${stop}
+tokens_in: ${tokens_in}
+tokens_out: ${tokens_out}
+---
+${body}
+EOF
+
+# Return control JSON
+if [[ "${stop}" == "tool_calls" ]]; then
+  echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
+else
+  jq -n --arg output "${text_output}" '{next_state: "done", output: $output}'
+fi

@@ -119,7 +119,16 @@ mode=""
 if [[ -n "${1:-}" && -d "${HARNESS_SESSIONS}/${1}" ]]; then
   # Resume existing session
   session_dir="${HARNESS_SESSIONS}/${1}"
-  mode="repl"
+  shift
+  if (( $# > 0 )); then
+    message="$*"
+    mode="oneshot"
+  elif [[ ! -t 0 ]]; then
+    message="$(cat)"
+    mode="oneshot"
+  else
+    mode="repl"
+  fi
 elif (( $# > 0 )); then
   # One-shot with args
   message="$*"

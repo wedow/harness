@@ -88,6 +88,7 @@ Executables in `hooks.d/<stage>/` directories. Stages:
 | Stage | stdin | Emits next_state | Purpose |
 |---|---|---|---|
 | `sources` | `{}` | _(n/a — called by core)_ | Discover source directories |
+| `resolve` | `{provider, model}` | _(called by agent cmd)_ | Resolve provider and model |
 | `start` | `{}` | `assemble` | Session initialization |
 | `assemble` | `{}` | `send` | Build the API request payload |
 | `send` | payload JSON | `receive` | Call the provider |
@@ -115,7 +116,9 @@ my-provider --defaults  # key=value pairs (e.g. model=claude-sonnet-4-6)
 my-provider --env       # list supported env vars with descriptions
 ```
 
-If `HARNESS_PROVIDER` is not set, harness auto-selects the first discovered provider whose `--ready` exits 0, and loads its `--defaults` for unset vars like `HARNESS_MODEL`.
+If `HARNESS_PROVIDER` is not set, the hookable `resolve` stage auto-selects the first discovered provider whose `--ready` exits 0, and loads its `--defaults` for unset vars like `HARNESS_MODEL`.
+
+All built-in providers support `--stream` for SSE streaming. When stdout is a TTY, responses stream token-by-token to the terminal. Tool calls are dispatched for parallel execution as they arrive during streaming — by the time the response finishes, tools may already be done.
 
 Built-in: `anthropic`, `openai`, `chatgpt`, `claude`. Each lives in its own provider plugin directory with provider-specific hooks for message assembly and response parsing. The `openai` provider works with any OpenAI-compatible API (ollama, llama.cpp, vLLM) — set `OPENAI_API_URL` to point at a local server. The `chatgpt` provider authenticates via OAuth2 PKCE and uses ChatGPT subscription quotas (Plus/Pro/Team/Enterprise) — no API key needed. The `claude` provider authenticates via OAuth2 PKCE with Claude.ai subscriptions (Pro/Team/Enterprise) — no API key needed.
 
@@ -131,9 +134,11 @@ url=https://api.groq.com/openai/v1/chat/completions
 auth_env=GROQ_API_KEY
 ```
 
+Optional fields: `max_tokens` (override protocol default), `stream=always` (force streaming even in non-TTY mode — needed for APIs that require `stream=true` for high token limits).
+
 Place it in any `providers/` directory (`~/.harness/providers/`, `.harness/providers/`, or a plugin's `providers/`). Harness resolves the conf to the protocol's provider binary, sets the right env vars, and runs the protocol's hooks — no symlinks or plugin directories needed.
 
-Bundled variants: `groq`, `deepseek` (OpenAI-compatible), `zai` (Anthropic-compatible).
+Bundled variants: `groq`, `deepseek`, `openrouter` (OpenAI-compatible), `fireworks`, `zai` (Anthropic-compatible).
 
 ```bash
 # Use a variant
@@ -223,6 +228,7 @@ Provider-specific assemble hooks (e.g., `plugins/anthropic/hooks.d/assemble/10-m
 | `HARNESS_MODEL` | auto from provider `--defaults` | Model identifier |
 | `HARNESS_PROVIDER` | auto: first provider with credentials | Provider plugin name |
 | `HARNESS_MAX_TURNS` | `100` | Max loop iterations |
+| `HARNESS_STREAM` | _(unset)_ | Set to `1` to force streaming in non-TTY mode |
 
 Provider-specific env vars (API keys, endpoints, etc.) are listed by `hs help` and documented via each provider's `--env` flag.
 

@@ -16,7 +16,7 @@ fi
 # --- constants ---
 client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
 use_nc=false
-if command -v nc &>/dev/null; then
+if command -v nc &>/dev/null && [[ -z "${SSH_TTY:-}" ]]; then
   use_nc=true
   port=53692
   redirect_uri="http://localhost:${port}/callback"

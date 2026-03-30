@@ -44,7 +44,7 @@ tmpdir="$(mktemp -d)"
 fifo="${tmpdir}/fifo"
 mkfifo "${fifo}"
 
-cat "${fifo}" | nc -l -p "${port}" > "${tmpdir}/request" &
+cat "${fifo}" | (nc -l -p "${port}" 2>/dev/null || nc -l "${port}") > "${tmpdir}/request" &
 nc_pid=$!
 
 # --- open browser ---

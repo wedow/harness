@@ -61,7 +61,8 @@ request="$(jq -n \
   --argjson system "${system_val}" \
   --argjson messages "${messages}" \
   --argjson tools "${tools}" \
-  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
+  '{model: $model, max_tokens: $max_tokens, cache_control: {type: "ephemeral"},
+    system: $system, messages: $messages}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 

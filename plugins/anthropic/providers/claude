@@ -70,8 +70,8 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
       '.claude[0].access_token = $at
        | .claude[0].refresh_token = $rt
        | .claude[0].expires_at = $exp' "${auth_file}")"
-    echo "${updated}" > "${auth_file}"
-    chmod 600 "${auth_file}"
+    _tmp="$(mktemp "${auth_file}.XXXXXX")"
+    echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
   fi
   # Also update cache for this run
   updated="$(jq \
@@ -81,8 +81,8 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
     '.claude[0].access_token = $at
      | .claude[0].refresh_token = $rt
      | .claude[0].expires_at = $exp' "${cache}")"
-  echo "${updated}" > "${cache}"
-  chmod 600 "${cache}"
+  _tmp="$(mktemp "${cache}.XXXXXX")"
+  echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${cache}"
   echo "refreshed claude token" >&2
 fi
 

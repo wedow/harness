@@ -13,6 +13,13 @@ fi
 # Only handle chatgpt provider
 [[ "${HARNESS_AUTH_PROVIDER:-}" == "chatgpt" ]] || { echo "${input}"; exit 0; }
 
+# --- check dependencies ---
+if ! command -v nc &>/dev/null; then
+  echo "error: netcat (nc) is required for ChatGPT OAuth" >&2
+  echo "install it with: apt install netcat-openbsd" >&2
+  exit 1
+fi
+
 # --- constants ---
 client_id="app_EMoamEEZ73f0CkXaXp7hrann"
 redirect_uri="http://localhost:1455/auth/callback"

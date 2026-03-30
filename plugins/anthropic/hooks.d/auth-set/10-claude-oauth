@@ -76,6 +76,8 @@ echo "received authorization code" >&2
 # --- exchange code for tokens ---
 token_response="$(curl -sS -X POST "${token_url}" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "User-Agent: node" \
   -d "$(jq -n \
     --arg grant_type "authorization_code" \
     --arg client_id "${client_id}" \

@@ -43,11 +43,20 @@ case "${subcmd}" in
 
     auth_file="$(_auth_file "${local_flag}")"
     existing="$(_read_auth "${auth_file}")"
-    updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
-      '.[$p] = ((.[$p] // []) + [$c])')"
+    # OAuth credentials replace existing ones (stale tokens are useless).
+    # API keys append (multiple keys per provider are valid).
+    if echo "${cred}" | jq -e '.type == "oauth"' &>/dev/null; then
+      updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
+        '.[$p] = [$c]')"
+    else
+      updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
+        '.[$p] = ((.[$p] // []) + [$c])')"
+    fi
     mkdir -p "$(dirname "${auth_file}")"
-    echo "${updated}" > "${auth_file}"
-    chmod 600 "${auth_file}"
+    _tmp="$(mktemp "${auth_file}.XXXXXX")"
+    echo "${updated}" > "${_tmp}"
+    chmod 600 "${_tmp}"
+    mv -f "${_tmp}" "${auth_file}"
     echo "saved credential for ${provider}" >&2
     ;;
 
@@ -75,6 +84,7 @@ case "${subcmd}" in
   rm)
     provider="${1:?usage: auth rm <provider> <index> [--local]}"
     index="${2:?usage: auth rm <provider> <index> [--local]}"
+    [[ "${index}" =~ ^[0-9]+$ ]] || _die "index must be numeric"
     shift 2
     local_flag=""
     [[ "${1:-}" == "--local" ]] && local_flag="--local"
@@ -82,7 +92,10 @@ case "${subcmd}" in
     auth_file="$(_auth_file "${local_flag}")"
     [[ -f "${auth_file}" ]] || _die "no auth file at ${auth_file}"
     updated="$(jq --arg p "${provider}" --argjson i "${index}" 'del(.[$p][$i])' "${auth_file}")"
-    echo "${updated}" > "${auth_file}"
+    _tmp="$(mktemp "${auth_file}.XXXXXX")"
+    echo "${updated}" > "${_tmp}"
+    chmod 600 "${_tmp}"
+    mv -f "${_tmp}" "${auth_file}"
     echo "removed ${provider}[${index}]" >&2
     ;;
 

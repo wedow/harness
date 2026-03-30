@@ -1,5 +1,9 @@
 #!/usr/bin/env bash
 # 10-claude-oauth — OAuth2 PKCE login for Claude.ai
+#
+# Starts a local HTTP callback server on localhost:53692, opens the browser,
+# and captures the authorization code automatically. Falls back to manual paste
+# if the callback server can't start (e.g., port busy).
 set -euo pipefail
 
 input="$(cat)"
@@ -13,25 +17,125 @@ fi
 # Only handle claude provider
 [[ "${HARNESS_AUTH_PROVIDER:-}" == "claude" ]] || { echo "${input}"; exit 0; }
 
-# --- constants ---
+# --- constants (match Anthropic's registered OAuth client) ---
 client_id="9d1c250a-e61b-44d9-88ed-5944d1962f5e"
-redirect_uri="https://platform.claude.com/oauth/code/callback"
 auth_url="https://claude.ai/oauth/authorize"
 token_url="https://platform.claude.com/v1/oauth/token"
-scope="org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers"
+scope="org:create_api_key user:profile user:inference user:sessions:claude_code user:mcp_servers user:file_upload"
+callback_host="127.0.0.1"
+callback_port="53692"
+callback_path="/callback"
+redirect_uri="http://localhost:${callback_port}${callback_path}"
 
 # --- helpers ---
-base64url_encode() { base64 -w0 | tr '+/' '-_' | tr -d '='; }
+base64url_encode() { base64 | tr -d '\n' | tr '+/' '-_' | tr -d '='; }
 
 # --- PKCE ---
+# state = code_verifier: required by Claude's callback flow. The callback page
+# returns code#state, and state must equal code_verifier for the token exchange.
 code_verifier="$(openssl rand 32 | base64url_encode)"
 code_challenge="$(printf '%s' "${code_verifier}" | openssl dgst -sha256 -binary | base64url_encode)"
 
+# --- callback server (python, single-request) ---
+# Writes "code state" to a result file on success. Binds before writing a
+# ready sentinel so the parent can reliably detect when the server is listening.
+_callback_script='
+import sys, os
+from html import escape
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+
+result_file = os.environ["CALLBACK_RESULT"]
+ready_file = os.environ["CALLBACK_READY"]
+
+class Handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        if parsed.path != os.environ["CALLBACK_PATH"]:
+            self.send_response(404)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<h1>Not found</h1>")
+            return
+        params = parse_qs(parsed.query)
+        code = (params.get("code") or [None])[0]
+        state = (params.get("state") or [None])[0]
+        error = (params.get("error") or [None])[0]
+        if error:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(f"<h1>Authentication failed</h1><p>{escape(error)}</p>".encode())
+            return
+        if not code or not state:
+            self.send_response(400)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(b"<h1>Missing code or state</h1>")
+            return
+        self.send_response(200)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.end_headers()
+        self.wfile.write(b"<h1>Authentication successful</h1><p>You can close this window.</p>")
+        with open(result_file, "w") as f:
+            f.write(f"{code} {state}")
+    def log_message(self, *args):
+        pass
+
+try:
+    server = HTTPServer((os.environ["CALLBACK_HOST"], int(os.environ["CALLBACK_PORT"])), Handler)
+    server.timeout = 120
+    # Signal readiness AFTER bind succeeds
+    with open(ready_file, "w") as f:
+        f.write("ready")
+    server.handle_request()
+except Exception as e:
+    sys.exit(1)
+'
+
+# --- cleanup ---
+_tmpdir="$(mktemp -d)"
+_server_pid=""
+
+_login_cleanup() {
+  [[ -n "${_server_pid}" ]] && kill "${_server_pid}" 2>/dev/null && wait "${_server_pid}" 2>/dev/null || true
+  rm -rf "${_tmpdir}"
+}
+trap '_login_cleanup' EXIT INT TERM HUP
+
+# --- try to start callback server ---
+_use_callback=false
+
+CALLBACK_HOST="${callback_host}" \
+CALLBACK_PORT="${callback_port}" \
+CALLBACK_PATH="${callback_path}" \
+CALLBACK_RESULT="${_tmpdir}/result" \
+CALLBACK_READY="${_tmpdir}/ready" \
+  python3 -c "${_callback_script}" &
+_server_pid=$!
+
+# Wait for ready sentinel (server has bound the port) or process death
+for (( _i=0; _i<20; _i++ )); do
+  [[ -f "${_tmpdir}/ready" ]] && { _use_callback=true; break; }
+  kill -0 "${_server_pid}" 2>/dev/null || break
+  sleep 0.2
+done
+
+if [[ "${_use_callback}" == false ]]; then
+  echo "callback server failed to start, falling back to manual paste" >&2
+fi
+
 # --- build authorization URL ---
+if [[ "${_use_callback}" == true ]]; then
+  _redirect="${redirect_uri}"
+else
+  _redirect="https://platform.claude.com/oauth/code/callback"
+fi
+
 url="${auth_url}?code=true"
 url+="&client_id=${client_id}"
 url+="&response_type=code"
-url+="&redirect_uri=$(printf '%s' "${redirect_uri}" | jq -sRr @uri)"
+url+="&redirect_uri=$(printf '%s' "${_redirect}" | jq -sRr @uri)"
 url+="&scope=$(printf '%s' "${scope}" | jq -sRr @uri)"
 url+="&code_challenge=${code_challenge}"
 url+="&code_challenge_method=S256"
@@ -46,48 +150,87 @@ elif command -v open &>/dev/null; then
   open "${url}" >/dev/null 2>&1 &
 fi
 
-# --- prompt user to paste authorization code ---
-echo >&2
-echo "after completing login, paste the authorization code:" >&2
-echo "(format: CODE#STATE from the page, or the full redirect URL)" >&2
-read -r user_input < /dev/tty
-
-# Extract code and state — handle: code#state, full URL, or bare code
+# --- capture authorization code ---
 auth_code=""
 callback_state=""
-if [[ "${user_input}" == http* ]]; then
-  # Parse code and state from redirect URL query string
-  auth_code="$(printf '%s' "${user_input}" | sed -n 's/.*[?&]code=\([^&#]*\).*/\1/p')"
-  callback_state="$(printf '%s' "${user_input}" | sed -n 's/.*[?&]state=\([^&#]*\).*/\1/p')"
-elif [[ "${user_input}" == *"#"* ]]; then
-  # code#state format (what the callback page shows)
-  auth_code="${user_input%%#*}"
-  callback_state="${user_input##*#}"
+
+if [[ "${_use_callback}" == true ]]; then
+  echo "waiting for browser callback..." >&2
+  echo "(or paste the authorization code manually if on a remote machine)" >&2
+
+  # Wait for result file (written by Python on successful callback)
+  for (( _i=0; _i<600; _i++ )); do
+    if [[ -f "${_tmpdir}/result" ]]; then
+      _cb_line="$(cat "${_tmpdir}/result")"
+      auth_code="${_cb_line%% *}"
+      callback_state="${_cb_line#* }"
+      echo "received authorization via browser callback" >&2
+      break
+    fi
+    kill -0 "${_server_pid}" 2>/dev/null || break
+    sleep 0.2
+  done
+
+  # If callback didn't capture, fall back to manual paste
+  if [[ -z "${auth_code}" ]]; then
+    echo "callback not received — paste the authorization code:" >&2
+    read -r user_input < /dev/tty
+    _parse_input=true
+  fi
 else
-  auth_code="${user_input}"
-  callback_state="${code_verifier}"
+  echo >&2
+  echo "after completing login, paste the authorization code:" >&2
+  echo "(format: CODE#STATE from the page, or the full redirect URL)" >&2
+  read -r user_input < /dev/tty
+  _parse_input=true
+fi
+
+# --- parse manual input (if needed) ---
+if [[ "${_parse_input:-false}" == true && -n "${user_input:-}" ]]; then
+  if [[ "${user_input}" == http* ]]; then
+    auth_code="$(printf '%s' "${user_input}" | sed -n 's/.*[?&]code=\([^&#]*\).*/\1/p')"
+    callback_state="$(printf '%s' "${user_input}" | sed -n 's/.*[?&]state=\([^&#]*\).*/\1/p')"
+  elif [[ "${user_input}" == *"#"* ]]; then
+    auth_code="${user_input%%#*}"
+    callback_state="${user_input##*#}"
+  else
+    auth_code="${user_input}"
+    callback_state="${code_verifier}"
+  fi
 fi
 
 [[ -z "${auth_code}" ]] && { echo "no authorization code provided" >&2; exit 1; }
 [[ -z "${callback_state}" ]] && callback_state="${code_verifier}"
 
-echo "received authorization code" >&2
+# Validate state matches our PKCE verifier
+[[ "${callback_state}" == "${code_verifier}" ]] || { echo "OAuth state mismatch — aborting" >&2; exit 1; }
+
+echo "exchanging code for tokens..." >&2
 
 # --- exchange code for tokens ---
+# User-Agent: node — Cloudflare blocks curl on platform.claude.com
 token_response="$(curl -sS -X POST "${token_url}" \
   -H "Content-Type: application/json" \
+  -H "Accept: application/json" \
+  -H "User-Agent: node" \
   -d "$(jq -n \
     --arg grant_type "authorization_code" \
     --arg client_id "${client_id}" \
     --arg code "${auth_code}" \
     --arg state "${callback_state}" \
-    --arg redirect_uri "${redirect_uri}" \
+    --arg redirect_uri "${_redirect}" \
     --arg code_verifier "${code_verifier}" \
     '{grant_type: $grant_type, client_id: $client_id, code: $code, state: $state, redirect_uri: $redirect_uri, code_verifier: $code_verifier}')" \
   --max-time 30)"
 
-if [[ -z "${token_response}" ]] || echo "${token_response}" | jq -e '.error' &>/dev/null; then
-  echo "token exchange failed: ${token_response}" >&2
+if [[ -z "${token_response}" ]]; then
+  echo "token exchange returned empty response" >&2
+  exit 1
+fi
+
+if echo "${token_response}" | jq -e '.error' &>/dev/null; then
+  _err="$(echo "${token_response}" | jq -r '.error.message // .error_description // .error // "unknown"' 2>/dev/null)"
+  echo "token exchange failed: ${_err}" >&2
   exit 1
 fi
 
@@ -97,9 +240,9 @@ expires_in="$(echo "${token_response}" | jq -r '.expires_in')"
 
 [[ "${access_token}" == "null" || -z "${access_token}" ]] && { echo "no access_token in token response" >&2; exit 1; }
 
-# --- compute expiry ---
-expires_at=""
-if [[ "${expires_in}" != "null" && -n "${expires_in}" ]]; then
+# --- compute expiry (store real value — margin applied at check-time by provider) ---
+expires_at=0
+if [[ "${expires_in}" != "null" && -n "${expires_in}" && "${expires_in}" =~ ^[0-9]+$ ]]; then
   expires_at="$(( $(date +%s) + expires_in ))"
 fi
 
@@ -109,7 +252,7 @@ echo "logged in successfully" >&2
 jq -n \
   --arg access_token "${access_token}" \
   --arg refresh_token "${refresh_token}" \
-  --arg expires_at "${expires_at}" \
+  --argjson expires_at "${expires_at}" \
   '{
     type: "oauth",
     access_token: $access_token,

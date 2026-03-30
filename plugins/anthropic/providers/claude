@@ -2,13 +2,19 @@
 # claude — Claude.ai OAuth provider. Handles auth and delegates to anthropic.
 set -euo pipefail
 
+# Refresh margin: refresh tokens 5 minutes before they expire to avoid
+# race conditions where the token expires between the check and the API call.
+# Applied only at check-time — stored expiry is always the real value.
+refresh_margin=300
+
 [[ "${1:-}" == "--describe" ]] && { echo "Claude.ai (OAuth)"; exit 0; }
 [[ "${1:-}" == "--ready" ]] && {
   cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
   [[ -f "${cache}" ]] || exit 1
   jq -e '.claude | length > 0' "${cache}" &>/dev/null || exit 1
   exp="$(jq -r '.claude[0].expires_at // "0"' "${cache}")"
-  [[ "${exp}" == "0" ]] || [[ "$(date +%s)" -lt "${exp}" ]]
+  # Unknown expiry (0) is treated as expired — force refresh
+  [[ "${exp}" != "0" ]] && [[ "$(date +%s)" -lt "$(( exp - refresh_margin ))" ]]
   exit $?
 }
 [[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
@@ -23,51 +29,107 @@ exit 0; }
 cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
 [[ -f "${cache}" ]] || { echo "no auth cache — run: hs auth set claude" >&2; exit 1; }
 
-# Read credentials
-access_token="$(jq -r '.claude[0].access_token // empty' "${cache}")"
-refresh_token="$(jq -r '.claude[0].refresh_token // empty' "${cache}")"
-expires_at="$(jq -r '.claude[0].expires_at // "0"' "${cache}")"
+# Read all credentials in a single jq call (atomic snapshot, no TOCTOU)
+_creds="$(jq -r '.claude[0] // {} | [.access_token // "", .refresh_token // "", .expires_at // "0"] | @tsv' "${cache}")"
+IFS=$'\t' read -r access_token refresh_token expires_at <<< "${_creds}"
 
 [[ -z "${access_token}" ]] && { echo "no claude access_token — run: hs auth set claude" >&2; exit 1; }
 
-# Refresh token if expired
+# Refresh if expired or within the margin window. The margin prevents a race
+# where the token expires between this check and the actual API call.
 now="$(date +%s)"
-if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires_at}" ]]; then
-  token_response="$(curl -sS -X POST "https://platform.claude.com/v1/oauth/token" \
-    -H "Content-Type: application/json" \
-    -d "$(jq -n \
+if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "$(( expires_at - refresh_margin ))" ]]; then
+  _lockdir="${cache}.lock"
+  _lock_acquired=false
+  _tmp=""
+
+  _cleanup() {
+    [[ -n "${_tmp}" && -f "${_tmp}" ]] && rm -f "${_tmp}"
+    [[ "${_lock_acquired}" == true ]] && rmdir "${_lockdir}" 2>/dev/null || true
+    _lock_acquired=false
+  }
+  trap '_cleanup' EXIT INT TERM HUP
+
+  # Acquire lock (mkdir is atomic on all POSIX systems).
+  # Wait longer than the refresh HTTP timeout (30s) to avoid stealing a live lock.
+  for (( _i=0; _i<80; _i++ )); do
+    mkdir "${_lockdir}" 2>/dev/null && { _lock_acquired=true; break; }
+    sleep 0.5
+  done
+
+  if [[ "${_lock_acquired}" == false ]]; then
+    # Could not acquire after 40s. Fail instead of stealing — the lock owner
+    # may still be alive. A stale lock from a crashed process will be cleaned
+    # up on the next successful acquisition attempt (or manually).
+    echo "could not acquire auth lock (another process may be refreshing) — retry in a moment" >&2
+    exit 1
+  fi
+
+  # Re-read cache under lock — another process may have already refreshed.
+  # Single jq call for atomic snapshot.
+  _creds="$(jq -r '.claude[0] // {} | [.access_token // "", .refresh_token // "", .expires_at // "0"] | @tsv' "${cache}")"
+  IFS=$'\t' read -r access_token refresh_token expires_at <<< "${_creds}"
+
+  if [[ "${expires_at}" != "0" && "$(date +%s)" -lt "$(( expires_at - refresh_margin ))" ]]; then
+    echo "using token refreshed by another process" >&2
+  else
+    # We need to refresh
+    _refresh_body="$(jq -n \
       --arg client_id "9d1c250a-e61b-44d9-88ed-5944d1962f5e" \
       --arg refresh_token "${refresh_token}" \
-      '{client_id: $client_id, grant_type: "refresh_token", refresh_token: $refresh_token}'
-    )" --max-time 30)" || { echo "token refresh failed" >&2; exit 1; }
+      '{client_id: $client_id, grant_type: "refresh_token", refresh_token: $refresh_token}')"
 
-  new_access="$(echo "${token_response}" | jq -r '.access_token // empty')"
-  [[ -z "${new_access}" ]] && { echo "token refresh returned no access_token" >&2; exit 1; }
+    # User-Agent: node — Cloudflare blocks curl on platform.claude.com
+    token_response="$(curl -sS -X POST "https://platform.claude.com/v1/oauth/token" \
+      -H "Content-Type: application/json" -H "Accept: application/json" \
+      -H "User-Agent: node" -d "${_refresh_body}" --max-time 30 2>/dev/null)" || {
+      sleep 1
+      token_response="$(curl -sS -X POST "https://platform.claude.com/v1/oauth/token" \
+        -H "Content-Type: application/json" -H "Accept: application/json" \
+        -H "User-Agent: node" -d "${_refresh_body}" --max-time 30)" || {
+        echo "token refresh request failed (network error)" >&2; exit 1
+      }
+    }
 
-  new_refresh="$(echo "${token_response}" | jq -r '.refresh_token // empty')"
-  expires_in="$(echo "${token_response}" | jq -r '.expires_in // "0"')"
-  new_expires_at="$(( $(date +%s) + expires_in ))"
+    new_access="$(echo "${token_response}" | jq -r '.access_token // empty')"
 
-  access_token="${new_access}"
-  [[ -n "${new_refresh}" && "${new_refresh}" != "null" ]] && refresh_token="${new_refresh}"
+    if [[ -z "${new_access}" ]]; then
+      _err="$(echo "${token_response}" | jq -r '.error_description // .error.message // .error // "unknown"' 2>/dev/null)"
+      echo "token refresh failed (${_err}) — run: hs auth set claude" >&2; exit 1
+    fi
 
-  updated="$(jq \
-    --arg at "${access_token}" \
-    --arg rt "${refresh_token}" \
-    --arg exp "${new_expires_at}" \
-    '.claude[0].access_token = $at
-     | .claude[0].refresh_token = $rt
-     | .claude[0].expires_at = $exp' "${cache}")"
-  echo "${updated}" > "${cache}"
-  chmod 600 "${cache}"
-  echo "refreshed claude token" >&2
+    new_refresh="$(echo "${token_response}" | jq -r '.refresh_token // empty')"
+    expires_in="$(echo "${token_response}" | jq -r '.expires_in // "0"')"
+    [[ "${expires_in}" =~ ^[0-9]+$ ]] || expires_in=0
+    new_expires_at="$(( $(date +%s) + expires_in ))"
+
+    access_token="${new_access}"
+    [[ -n "${new_refresh}" && "${new_refresh}" != "null" ]] && refresh_token="${new_refresh}"
+
+    # Atomic write via temp file (same dir guarantees same filesystem for rename)
+    _tmp="$(mktemp "${cache}.XXXXXX")"
+    jq \
+      --arg at "${access_token}" \
+      --arg rt "${refresh_token}" \
+      --argjson exp "${new_expires_at}" \
+      '.claude[0].access_token = $at
+       | .claude[0].refresh_token = $rt
+       | .claude[0].expires_at = $exp' "${cache}" > "${_tmp}" || { echo "cache update failed" >&2; exit 1; }
+    chmod 600 "${_tmp}"
+    mv -f "${_tmp}" "${cache}"
+    _tmp=""
+    echo "refreshed claude token" >&2
+  fi
+
+  # Release lock (also handled by trap on any exit)
+  _lock_acquired=false
+  rmdir "${_lockdir}" 2>/dev/null || true
 fi
 
 # Configure anthropic provider for OAuth
 export ANTHROPIC_AUTH_HEADER="Authorization: Bearer ${access_token}"
 export ANTHROPIC_BETA="claude-code-20250219,oauth-2025-04-20"
 
-# Find the anthropic provider
 IFS=':' read -ra _sources <<< "${HARNESS_SOURCES}"
 _anthropic=""
 for (( _i=${#_sources[@]}-1; _i>=0; _i-- )); do
@@ -75,7 +137,6 @@ for (( _i=${#_sources[@]}-1; _i>=0; _i-- )); do
 done
 [[ -z "${_anthropic}" ]] && { echo "anthropic provider not found" >&2; exit 1; }
 
-# Pre-process: system prompt as cached content blocks with identity
 payload="$(cat)"
 system="$(echo "${payload}" | jq -r '.system // ""')"
 identity='You are Claude Code, Anthropic'\''s official CLI for Claude.'

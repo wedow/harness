@@ -22,14 +22,27 @@ exit 0; }
 streaming=false
 [[ "${1:-}" == "--stream" ]] && { streaming=true; shift; }
 
-if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
-  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
-  [[ -f "${cache}" ]] && ANTHROPIC_API_KEY="$(jq -r '.anthropic[0].key // empty' "${cache}")"
+# Auth: support ANTHROPIC_AUTH_HEADER (for OAuth delegation) or API key
+if [[ -z "${ANTHROPIC_AUTH_HEADER:-}" ]]; then
+  if [[ -z "${ANTHROPIC_API_KEY:-}" ]]; then
+    cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
+    [[ -f "${cache}" ]] && ANTHROPIC_API_KEY="$(jq -r '.anthropic[0].key // empty' "${cache}")"
+  fi
+  ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set — run: hs auth set anthropic}"
+  _auth_header="x-api-key: ${ANTHROPIC_API_KEY}"
+else
+  _auth_header="${ANTHROPIC_AUTH_HEADER}"
 fi
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:?ANTHROPIC_API_KEY not set — run: hs auth set anthropic}"
 ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
 ANTHROPIC_API_VERSION="${ANTHROPIC_API_VERSION:-2023-06-01}"
 ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-8192}"
+
+_curl_headers=(
+  -H "${_auth_header}"
+  -H "anthropic-version: ${ANTHROPIC_API_VERSION}"
+  -H "content-type: application/json"
+)
+[[ -n "${ANTHROPIC_BETA:-}" ]] && _curl_headers+=(-H "anthropic-beta: ${ANTHROPIC_BETA}")
 
 payload="$(cat)"
 
@@ -37,15 +50,15 @@ payload="$(cat)"
 model="$(echo "${payload}" | jq -r '.model // ""')"
 [[ -z "${model}" ]] && model="${HARNESS_MODEL}"
 
-system="$(echo "${payload}" | jq -r '.system // ""')"
+system_val="$(echo "${payload}" | jq -c '.system // ""')"
 messages="$(echo "${payload}" | jq -c '.messages // []')"
 tools="$(echo "${payload}" | jq -c '.tools // []')"
 
-# Build the API request body
+# Build the API request body (system can be string or array of content blocks)
 request="$(jq -n \
   --arg model "${model}" \
   --argjson max_tokens "${ANTHROPIC_MAX_TOKENS}" \
-  --arg system "${system}" \
+  --argjson system "${system_val}" \
   --argjson messages "${messages}" \
   --argjson tools "${tools}" \
   '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
@@ -133,9 +146,7 @@ if [[ "${streaming}" == true ]]; then
         ;;
     esac
   done < <(curl -sS -N "${ANTHROPIC_API_URL}" \
-    -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-    -H "anthropic-version: ${ANTHROPIC_API_VERSION}" \
-    -H "content-type: application/json" \
+    "${_curl_headers[@]}" \
     -d "${request}" \
     --max-time 300
   )
@@ -172,9 +183,7 @@ fi
 
 # Call the API
 response="$(curl -sS "${ANTHROPIC_API_URL}" \
-  -H "x-api-key: ${ANTHROPIC_API_KEY}" \
-  -H "anthropic-version: ${ANTHROPIC_API_VERSION}" \
-  -H "content-type: application/json" \
+  "${_curl_headers[@]}" \
   -d "${request}" \
   --max-time 300
 )"

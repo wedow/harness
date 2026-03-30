@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# claude — provider plugin for the Anthropic Messages API with Claude.ai OAuth.
-# Receives assembled payload JSON on stdin, outputs the API response.
+# claude — Claude.ai OAuth provider. Handles auth and delegates to anthropic.
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "Claude.ai (OAuth)"; exit 0; }
@@ -17,6 +16,9 @@ set -euo pipefail
 ANTHROPIC_MAX_TOKENS  max response tokens (8192)
 ENVEOF
 exit 0; }
+
+# --stream is passed through to the anthropic provider
+[[ "${1:-}" == "--stream" ]] && { _stream="--stream"; shift; } || _stream=""
 
 cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
 [[ -f "${cache}" ]] || { echo "no auth cache — run: hs auth set claude" >&2; exit 1; }
@@ -49,7 +51,6 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
   access_token="${new_access}"
   [[ -n "${new_refresh}" && "${new_refresh}" != "null" ]] && refresh_token="${new_refresh}"
 
-  # Update auth cache
   updated="$(jq \
     --arg at "${access_token}" \
     --arg rt "${refresh_token}" \
@@ -62,19 +63,21 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
   echo "refreshed claude token" >&2
 fi
 
-ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-8192}"
+# Configure anthropic provider for OAuth
+export ANTHROPIC_AUTH_HEADER="Authorization: Bearer ${access_token}"
+export ANTHROPIC_BETA="claude-code-20250219,oauth-2025-04-20"
 
+# Find the anthropic provider
+IFS=':' read -ra _sources <<< "${HARNESS_SOURCES}"
+_anthropic=""
+for (( _i=${#_sources[@]}-1; _i>=0; _i-- )); do
+  [[ -x "${_sources[_i]}/providers/anthropic" ]] && _anthropic="${_sources[_i]}/providers/anthropic"
+done
+[[ -z "${_anthropic}" ]] && { echo "anthropic provider not found" >&2; exit 1; }
+
+# Pre-process: system prompt as cached content blocks with identity
 payload="$(cat)"
-
-# Extract fields from the assembled payload
-model="$(echo "${payload}" | jq -r '.model // ""')"
-[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
-
 system="$(echo "${payload}" | jq -r '.system // ""')"
-messages="$(echo "${payload}" | jq -c '.messages // []')"
-tools="$(echo "${payload}" | jq -c '.tools // []')"
-
-# Build system as array of content blocks with Claude Code identity prepended
 identity='You are Claude Code, Anthropic'\''s official CLI for Claude.'
 if [[ -n "${system}" ]]; then
   system_blocks="$(jq -n \
@@ -89,37 +92,6 @@ else
     '[{type: "text", text: $identity, cache_control: {type: "ephemeral"}}]'
   )"
 fi
+payload="$(echo "${payload}" | jq -c --argjson s "${system_blocks}" '.system = $s')"
 
-# Build the API request body
-request="$(jq -n \
-  --arg model "${model}" \
-  --argjson max_tokens "${ANTHROPIC_MAX_TOKENS}" \
-  --argjson system "${system_blocks}" \
-  --argjson messages "${messages}" \
-  --argjson tools "${tools}" \
-  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
-   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
-)"
-
-# Call the API
-response="$(curl -sS "https://api.anthropic.com/v1/messages" \
-  -H "Authorization: Bearer ${access_token}" \
-  -H "anthropic-version: 2023-06-01" \
-  -H "anthropic-beta: claude-code-20250219,oauth-2025-04-20" \
-  -H "user-agent: claude-cli/2.1.62" \
-  -H "x-app: cli" \
-  -H "content-type: application/json" \
-  -d "${request}" \
-  --max-time 300
-)"
-
-# Check for API errors
-error_type="$(echo "${response}" | jq -r '.type // ""')"
-if [[ "${error_type}" == "error" ]]; then
-  error_msg="$(echo "${response}" | jq -r '.error.message // "unknown error"')"
-  echo "claude API error: ${error_msg}" >&2
-  exit 1
-fi
-
-# Pass through the raw response
-echo "${response}"
+echo "${payload}" | "${_anthropic}" ${_stream} "$@"

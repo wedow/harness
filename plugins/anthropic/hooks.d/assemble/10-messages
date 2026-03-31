@@ -55,19 +55,40 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
       content_blocks="[]"
       current_text=""
       in_tool_block=false
+      in_thinking_block=false
       tool_id="" tool_name="" tool_body=""
+      thinking_sig="" thinking_text=""
+
+      _flush_text() {
+        if [[ -n "${current_text}" ]]; then
+          local _flush="${current_text%$'\n'}"
+          local _flush_trimmed="${_flush//[$'\n\t ']/}"
+          if [[ -n "${_flush_trimmed}" ]]; then
+            content_blocks="$(echo "${content_blocks}" | jq --arg t "${_flush}" \
+              '. + [{type: "text", text: $t}]')"
+          fi
+          current_text=""
+        fi
+      }
 
       while IFS= read -r line; do
+        if [[ "${line}" =~ ^\`\`\`thinking\ signature=(.+) ]]; then
+          _flush_text
+          in_thinking_block=true
+          thinking_sig="${BASH_REMATCH[1]}"
+          thinking_text=""
+          continue
+        fi
+        if ${in_thinking_block} && [[ "${line}" == '```' ]]; then
+          in_thinking_block=false
+          thinking_text="${thinking_text%$'\n'}"
+          content_blocks="$(echo "${content_blocks}" | jq \
+            --arg thinking "${thinking_text}" --arg signature "${thinking_sig}" \
+            '. + [{type: "thinking", thinking: $thinking, signature: $signature}]')"
+          continue
+        fi
         if [[ "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
-          if [[ -n "${current_text}" ]]; then
-            _flush="${current_text%$'\n'}"
-            _flush_trimmed="${_flush//[$'\n\t ']/}"
-            if [[ -n "${_flush_trimmed}" ]]; then
-              content_blocks="$(echo "${content_blocks}" | jq --arg t "${_flush}" \
-                '. + [{type: "text", text: $t}]')"
-            fi
-            current_text=""
-          fi
+          _flush_text
           in_tool_block=true
           tool_id="${BASH_REMATCH[1]}"
           tool_name="${BASH_REMATCH[2]}"
@@ -81,21 +102,16 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
             '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
           continue
         fi
-        if ${in_tool_block}; then
+        if ${in_thinking_block}; then
+          thinking_text+="${line}"$'\n'
+        elif ${in_tool_block}; then
           tool_body+="${line}"
         else
           current_text+="${line}"$'\n'
         fi
       done <<< "${body}"
 
-      if [[ -n "${current_text}" ]]; then
-        current_text="${current_text%$'\n'}"
-        # Only add non-empty text blocks
-        trimmed="${current_text//[$'\n\t ']/}"
-        [[ -n "${trimmed}" ]] && \
-          content_blocks="$(echo "${content_blocks}" | jq --arg t "${current_text}" \
-            '. + [{type: "text", text: $t}]')"
-      fi
+      _flush_text
 
       block_count="$(echo "${content_blocks}" | jq 'length')"
       if (( block_count == 1 )) && [[ "$(echo "${content_blocks}" | jq -r '.[0].type')" == "text" ]]; then

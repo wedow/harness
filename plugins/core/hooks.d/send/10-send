@@ -39,8 +39,8 @@ if [[ -z "${provider_bin}" ]]; then
     protocol="$(grep '^protocol=' "${conf}" | head -1 | cut -d= -f2-)"
     url="$(grep '^url=' "${conf}" | head -1 | cut -d= -f2-)"
     auth_env="$(grep '^auth_env=' "${conf}" | head -1 | cut -d= -f2-)"
-    max_tokens="$(grep '^max_tokens=' "${conf}" | head -1 | cut -d= -f2-)"
-    stream_conf="$(grep '^stream=' "${conf}" | head -1 | cut -d= -f2-)"
+    max_tokens="$(grep '^max_tokens=' "${conf}" | head -1 | cut -d= -f2- || true)"
+    stream_conf="$(grep '^stream=' "${conf}" | head -1 | cut -d= -f2- || true)"
     provider_bin="$(_find_bin "${protocol}")"
     # Map variant config to protocol env vars
     proto_upper="$(echo "${protocol}" | tr '[:lower:]' '[:upper:]')"

@@ -103,6 +103,13 @@ request="$(jq -n \
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
+# Add reasoning if HARNESS_THINKING is set
+if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != "off" ]]; then
+  _re="${HARNESS_THINKING}"
+  [[ "${_re}" == "max" ]] && _re="high"
+  request="$(echo "${request}" | jq -c --arg effort "${_re}" '. + {reasoning: {effort: $effort}}')"
+fi
+
 if [[ "${_stream}" == true ]]; then
   # Streaming path: display text deltas in real-time, extract final response
   response=""

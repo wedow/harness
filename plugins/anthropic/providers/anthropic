@@ -61,10 +61,20 @@ request="$(jq -n \
   --argjson system "${system_val}" \
   --argjson messages "${messages}" \
   --argjson tools "${tools}" \
-  '{model: $model, max_tokens: $max_tokens, cache_control: {type: "ephemeral"},
-    system: $system, messages: $messages}
+  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
+
+# Automatic prompt caching (Anthropic-only — third-party endpoints reject unknown fields)
+if [[ "${ANTHROPIC_API_URL}" == "https://api.anthropic.com/"* ]]; then
+  request="$(echo "${request}" | jq -c '. + {cache_control: {type: "ephemeral"}}')"
+fi
+
+# Add thinking/effort if HARNESS_THINKING is set
+if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != "off" ]]; then
+  request="$(echo "${request}" | jq -c --arg effort "${HARNESS_THINKING}" \
+    '. + {thinking: {type: "adaptive"}, output_config: {effort: $effort}}')"
+fi
 
 if [[ "${streaming}" == true ]]; then
   request="$(echo "${request}" | jq -c '. + {stream: true}')"
@@ -74,20 +84,26 @@ if [[ "${streaming}" == true ]]; then
   input_tokens=0
   output_tokens=0
   stop_reason=""
-  text_content=""
-  tool_calls="[]"
+  content="[]"
   # Per-block state
   block_type=""
+  block_text=""
   block_id=""
   block_name=""
   block_input=""
+  block_thinking=""
+  block_signature=""
   got_message_start=false
 
-  while IFS= read -r line; do
+  _api_error=""
+  while IFS= read -r line || [[ -n "${line}" ]]; do
     # Skip blank lines and event: lines
     [[ -z "${line}" || "${line}" =~ ^event: ]] && continue
-    # Only process data: lines (space after colon is optional per SSE spec)
-    [[ "${line}" == data:* ]] || continue
+    # Detect non-SSE error responses (API returns plain JSON on errors)
+    if [[ "${line}" != data:* ]]; then
+      [[ -z "${_api_error}" ]] && _api_error="${line}"
+      continue
+    fi
     data="${line#data:}"; data="${data# }"
 
     event_type="$(echo "${data}" | jq -r '.type // ""')"
@@ -100,50 +116,72 @@ if [[ "${streaming}" == true ]]; then
         ;;
       content_block_start)
         block_type="$(echo "${data}" | jq -r '.content_block.type // ""')"
+        block_text="" ; block_thinking="" ; block_signature=""
         if [[ "${block_type}" == "tool_use" ]]; then
           block_id="$(echo "${data}" | jq -r '.content_block.id // ""')"
           block_name="$(echo "${data}" | jq -r '.content_block.name // ""')"
           block_input=""
+        elif [[ "${block_type}" == "thinking" && -n "${HARNESS_STREAM_FD:-}" ]]; then
+          printf '\033[2m' >&"${HARNESS_STREAM_FD}"
         fi
         ;;
       content_block_delta)
         delta_type="$(echo "${data}" | jq -r '.delta.type // ""')"
-        if [[ "${delta_type}" == "text_delta" ]]; then
-          # Sentinel trick: $() strips trailing newlines; printf x preserves them
-          text="$(echo "${data}" | jq -j '.delta.text // ""'; printf x)"
-          text="${text%x}"
-          text_content+="${text}"
-          [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${text}" >&"${HARNESS_STREAM_FD}"
-        elif [[ "${delta_type}" == "input_json_delta" ]]; then
-          partial="$(echo "${data}" | jq -r '.delta.partial_json // ""')"
-          block_input+="${partial}"
-        fi
+        case "${delta_type}" in
+          text_delta)
+            text="$(echo "${data}" | jq -j '.delta.text // ""'; printf x)"
+            text="${text%x}"
+            block_text+="${text}"
+            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${text}" >&"${HARNESS_STREAM_FD}"
+            ;;
+          thinking_delta)
+            text="$(echo "${data}" | jq -j '.delta.thinking // ""'; printf x)"
+            text="${text%x}"
+            block_thinking+="${text}"
+            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${text}" >&"${HARNESS_STREAM_FD}"
+            ;;
+          signature_delta)
+            block_signature+="$(echo "${data}" | jq -r '.delta.signature // ""')"
+            ;;
+          input_json_delta)
+            block_input+="$(echo "${data}" | jq -r '.delta.partial_json // ""')"
+            ;;
+        esac
         ;;
       content_block_stop)
-        if [[ "${block_type}" == "tool_use" ]]; then
-          parsed_input="$(echo "${block_input}" | jq -c '.' 2>/dev/null || echo '{}')"
-          tool_calls="$(echo "${tool_calls}" | jq -c \
-            --arg id "${block_id}" \
-            --arg name "${block_name}" \
-            --argjson input "${parsed_input}" \
-            '. + [{type: "tool_use", id: $id, name: $name, input: $input}]'
-          )"
-          if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
-            jq -c -n --arg id "${block_id}" --arg name "${block_name}" \
-              --argjson input "${parsed_input}" \
-              '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
-          fi
-          block_type=""
-          block_id=""
-          block_name=""
-          block_input=""
-        fi
+        case "${block_type}" in
+          text)
+            content="$(echo "${content}" | jq -c --arg t "${block_text}" \
+              '. + [{type: "text", text: $t}]')"
+            ;;
+          thinking)
+            content="$(echo "${content}" | jq -c \
+              --arg t "${block_thinking}" --arg s "${block_signature}" \
+              '. + [{type: "thinking", thinking: $t, signature: $s}]')"
+            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '\033[0m\n' >&"${HARNESS_STREAM_FD}"
+            ;;
+          tool_use)
+            parsed_input="$(echo "${block_input}" | jq -c '.' 2>/dev/null || echo '{}')"
+            content="$(echo "${content}" | jq -c \
+              --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" \
+              '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
+            if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
+              jq -c -n --arg id "${block_id}" --arg name "${block_name}" \
+                --argjson input "${parsed_input}" \
+                '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
+            fi
+            ;;
+        esac
+        block_type=""
         ;;
       message_delta)
         stop_reason="$(echo "${data}" | jq -r '.delta.stop_reason // ""')"
         output_tokens="$(echo "${data}" | jq -r '.usage.output_tokens // 0')"
         ;;
       message_stop|ping)
+        ;;
+      error)
+        _api_error="${data}"
         ;;
     esac
   done < <(curl -sS -N "${ANTHROPIC_API_URL}" \
@@ -153,20 +191,17 @@ if [[ "${streaming}" == true ]]; then
   )
 
   if [[ "${got_message_start}" == false ]]; then
-    echo "anthropic streaming error: no message_start received" >&2
+    # Surface the actual API error if we captured one
+    if [[ -n "${_api_error}" ]]; then
+      _msg="$(echo "${_api_error}" | jq -r '.error.message // empty' 2>/dev/null)" || true
+      echo "anthropic API error: ${_msg:-${_api_error}}" >&2
+    else
+      echo "anthropic streaming error: no message_start received" >&2
+    fi
     exit 1
   fi
 
-  # Build content array
-  content="[]"
-  if [[ -n "${text_content}" ]]; then
-    content="$(jq -n --arg text "${text_content}" '[{type: "text", text: $text}]')"
-  fi
-  if [[ "$(echo "${tool_calls}" | jq 'length')" -gt 0 ]]; then
-    content="$(echo "${content}" | jq -c --argjson tc "${tool_calls}" '. + $tc')"
-  fi
-
-  # Output reconstructed response
+  # Output reconstructed response (content array built in order during streaming)
   jq -n -c \
     --arg model "${local_model}" \
     --arg stop_reason "${stop_reason}" \

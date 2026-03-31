@@ -44,6 +44,13 @@ while IFS= read -r block; do
       body+="${text}"$'\n'
       text_output+="${text}"
       ;;
+    thinking)
+      tsig="$(echo "${block}" | jq -r '.signature')"
+      ttext="$(echo "${block}" | jq -r '.thinking')"
+      body+="\`\`\`thinking signature=${tsig}"$'\n'
+      body+="${ttext}"$'\n'
+      body+='```'$'\n'
+      ;;
     tool_use)
       tid="$(echo "${block}" | jq -r '.id')"
       tname="$(echo "${block}" | jq -r '.name')"

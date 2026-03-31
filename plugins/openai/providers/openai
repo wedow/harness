@@ -63,6 +63,13 @@ request="$(jq -n \
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
+# Add reasoning_effort if HARNESS_THINKING is set
+if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != "off" ]]; then
+  _re="${HARNESS_THINKING}"
+  [[ "${_re}" == "max" ]] && _re="high"
+  request="$(echo "${request}" | jq -c --arg re "${_re}" '. + {reasoning_effort: $re}')"
+fi
+
 # Auth: env var wins, then auth cache, then no auth (local servers)
 if [[ -z "${OPENAI_API_KEY:-}" ]]; then
   cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"

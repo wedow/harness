@@ -46,8 +46,8 @@ case "${subcmd}" in
     updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
       '.[$p] = [$c]')"
     mkdir -p "$(dirname "${auth_file}")"
-    echo "${updated}" > "${auth_file}"
-    chmod 600 "${auth_file}"
+    _tmp="$(mktemp "${auth_file}.XXXXXX")"
+    echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
     echo "saved credential for ${provider}" >&2
     ;;
 
@@ -82,7 +82,8 @@ case "${subcmd}" in
     auth_file="$(_auth_file "${local_flag}")"
     [[ -f "${auth_file}" ]] || _die "no auth file at ${auth_file}"
     updated="$(jq --arg p "${provider}" --argjson i "${index}" 'del(.[$p][$i])' "${auth_file}")"
-    echo "${updated}" > "${auth_file}"
+    _tmp="$(mktemp "${auth_file}.XXXXXX")"
+    echo "${updated}" > "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
     echo "removed ${provider}[${index}]" >&2
     ;;
 

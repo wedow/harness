@@ -10,7 +10,7 @@ while IFS= read -r src; do
   merged="$(jq -s '.[0] * .[1]' <(echo "${merged}") "${src}/.auth.json")"
 done < <(echo "${input}" | jq -r '.sources[]')
 
-echo "${merged}" > "${HARNESS_HOME}/.auth-cache.json"
-chmod 600 "${HARNESS_HOME}/.auth-cache.json"
+_tmp="$(mktemp "${HARNESS_HOME}/.auth-cache.json.XXXXXX")"
+echo "${merged}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${HARNESS_HOME}/.auth-cache.json"
 
 echo "${input}"

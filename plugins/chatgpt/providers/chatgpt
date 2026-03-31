@@ -71,8 +71,8 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
      | .chatgpt[0].refresh_token = $rt
      | .chatgpt[0].id_token = $it
      | .chatgpt[0].expires_at = $exp' "${cache}")"
-  echo "${updated}" > "${cache}"
-  chmod 600 "${cache}"
+  _tmp="$(mktemp "${cache}.XXXXXX")"
+  echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${cache}"
   echo "refreshed chatgpt token" >&2
 fi
 

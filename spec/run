@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# spec/run — test runner for harness. walks spec/tests/*/, runs test.sh in each.
+set -euo pipefail
+
+SPEC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export SPEC_DIR
+passed=0 failed=0 total=0
+
+for test_dir in "${SPEC_DIR}"/tests/*/; do
+  [[ -f "${test_dir}/test.sh" ]] || continue
+  name="$(basename "${test_dir}")"
+  total=$((total + 1))
+
+  if output="$(bash "${test_dir}/test.sh" 2>&1)"; then
+    printf '  \033[32m✓\033[0m %s\n' "${name}"
+    passed=$((passed + 1))
+  else
+    printf '  \033[31m✗\033[0m %s\n' "${name}"
+    echo "${output}" | sed 's/^/    /'
+    failed=$((failed + 1))
+  fi
+done
+
+if [[ "${total}" -eq 0 ]]; then
+  echo "no tests found in ${SPEC_DIR}/tests/"
+  exit 1
+fi
+
+echo
+printf '%d passed, %d failed\n' "${passed}" "${failed}"
+[[ "${failed}" -eq 0 ]]

@@ -23,7 +23,7 @@ tools="[]"
 for name in "${!tool_map[@]}"; do
   path="${tool_map[$name]}"
   schema="$("${path}" --schema 2>/dev/null)" || continue
-  tools="$(echo "${tools}" | jq --argjson s "${schema}" '. + [$s]')"
+  tools="$(printf '%s\n%s' "${tools}" "${schema}" | jq -s '.[0] + [.[1]]')"
 done
 
-echo "${payload}" | jq --argjson tools "${tools}" '. + {tools: $tools}'
+printf '%s\n%s' "${payload}" "${tools}" | jq -c -s '.[0] + {tools: .[1]}'

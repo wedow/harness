@@ -45,21 +45,18 @@ openai_tools="$(echo "${tools}" | jq -c '[.[] | {
 }]')"
 
 # Build messages with system message prepended
-openai_messages="$(jq -n \
-  --arg system "${system}" \
-  --argjson msgs "${messages}" \
-  'if ($system | length) > 0
-   then [{role: "system", content: $system}] + $msgs
-   else $msgs end'
+openai_messages="$(printf '%s\n%s' "${messages}" "$(printf '%s' "${system}" | jq -Rs '.')" | jq -c -s \
+  'if (.[1] | length) > 0
+   then [{role: "system", content: .[1]}] + .[0]
+   else .[0] end'
 )"
 
 # Build the request body
-request="$(jq -n \
+request="$(printf '%s\n%s' "${openai_messages}" "${openai_tools}" | jq -c -s \
   --arg model "${model}" \
   --argjson max_tokens "${OPENAI_MAX_TOKENS}" \
-  --argjson messages "${openai_messages}" \
-  --argjson tools "${openai_tools}" \
-  '{model: $model, max_tokens: $max_tokens, messages: $messages}
+  '.[0] as $msgs | .[1] as $tools |
+   {model: $model, max_tokens: $max_tokens, messages: $msgs}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
@@ -137,10 +134,10 @@ if [[ "${streaming}" == true ]]; then
       completion_tokens="$(echo "${usage}" | jq -r '.completion_tokens // 0')"
       total_tokens="$(echo "${usage}" | jq -r '.total_tokens // 0')"
     fi
-  done < <(curl -sS -N "${OPENAI_API_URL}" \
+  done < <(echo "${request}" | curl -sS -N "${OPENAI_API_URL}" \
     "${auth_args[@]}" \
     -H "content-type: application/json" \
-    -d "${request}" \
+    -d @- \
     --max-time 300
   )
 
@@ -148,9 +145,9 @@ if [[ "${streaming}" == true ]]; then
   if [[ ${#tc_ids[@]} -gt 0 && -n "${HARNESS_TOOL_FIFO:-}" ]]; then
     for _didx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
       _parsed="$(echo "${tc_args[$_didx]}" | jq -c '.' 2>/dev/null || echo '{}')"
-      jq -c -n --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" \
-        --argjson input "${_parsed}" \
-        '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
+      echo "${_parsed}" | jq -c \
+        --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" \
+        '{id: $id, name: $name, input: .}' > "${HARNESS_TOOL_FIFO}"
     done
   fi
 
@@ -158,26 +155,24 @@ if [[ "${streaming}" == true ]]; then
   tc_array="[]"
   if [[ ${#tc_ids[@]} -gt 0 ]]; then
     for idx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
-      tc_array="$(echo "${tc_array}" | jq -c \
-        --arg id "${tc_ids[$idx]}" \
-        --arg name "${tc_names[$idx]}" \
-        --arg args "${tc_args[$idx]}" \
-        '. + [{id: $id, type: "function", function: {name: $name, arguments: $args}}]'
+      tc_array="$(printf '%s\n%s' "${tc_array}" "$(printf '%s' "${tc_args[$idx]}" | jq -Rs '.')" \
+        | jq -s -c --arg id "${tc_ids[$idx]}" --arg name "${tc_names[$idx]}" \
+        '.[0] + [{id: $id, type: "function", function: {name: $name, arguments: .[1]}}]'
       )"
     done
   fi
 
   # Reconstruct complete response
-  jq -n \
+  printf '%s\n%s' "$(printf '%s' "${text_content}" | jq -Rs '.')" "${tc_array}" \
+    | jq -s \
     --arg id "${resp_id}" \
     --arg model "${resp_model}" \
-    --arg content "${text_content}" \
-    --argjson tool_calls "${tc_array}" \
     --arg finish_reason "${finish_reason}" \
     --argjson prompt_tokens "${prompt_tokens}" \
     --argjson completion_tokens "${completion_tokens}" \
     --argjson total_tokens "${total_tokens}" \
-    '{
+    '.[0] as $content | .[1] as $tool_calls |
+    {
       id: $id,
       object: "chat.completion",
       model: $model,
@@ -193,10 +188,10 @@ if [[ "${streaming}" == true ]]; then
       usage: {prompt_tokens: $prompt_tokens, completion_tokens: $completion_tokens, total_tokens: $total_tokens}
     }'
 else
-  response="$(curl -sS "${OPENAI_API_URL}" \
+  response="$(echo "${request}" | curl -sS "${OPENAI_API_URL}" \
     "${auth_args[@]}" \
     -H "content-type: application/json" \
-    -d "${request}" \
+    -d @- \
     --max-time 300
   )"
 

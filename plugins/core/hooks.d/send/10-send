@@ -109,7 +109,7 @@ if [[ -n "${stream_flag}" ]]; then
       fi
       (
         _r="$(cd "${_workdir}" && echo "${_input}" | "${_bin}" --exec 2>&1)" && _e=false || _e=true
-        jq -n --arg r "${_r}" --argjson e "${_e}" '{result: $r, error: $e}' \
+        printf '%s' "${_r}" | jq -Rs --argjson e "${_e}" '{result: ., error: $e}' \
           > "${dispatch_dir}/${_cid}.json"
       ) &
     done < "${dispatch_dir}/.fifo"

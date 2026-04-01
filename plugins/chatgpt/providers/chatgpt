@@ -94,12 +94,11 @@ responses_tools="$(echo "${tools}" | jq -c '[.[] | {
 }]')"
 
 # Build the request
-request="$(jq -n \
+request="$(echo "${input_items}" | jq -c \
   --arg model "${model}" \
   --arg instructions "${system}" \
-  --argjson input "${input_items}" \
   --argjson tools "${responses_tools}" \
-  '{model: $model, instructions: $instructions, input: $input, store: false, stream: true}
+  '{model: $model, instructions: $instructions, input: ., store: false, stream: true}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
@@ -146,11 +145,11 @@ if [[ "${_stream}" == true ]]; then
         response="$(echo "${data}" | jq -c '.response')"
         ;;
     esac
-  done < <(curl -sS -N "https://chatgpt.com/backend-api/codex/responses" \
+  done < <(echo "${request}" | curl -sS -N "https://chatgpt.com/backend-api/codex/responses" \
     -H "Authorization: Bearer ${access_token}" \
     -H "ChatGPT-Account-ID: ${account_id}" \
     -H "Content-Type: application/json" \
-    -d "${request}" \
+    -d @- \
     --max-time 300
   )
 
@@ -164,11 +163,11 @@ if [[ "${_stream}" == true ]]; then
 fi
 
 # Non-streaming path: buffer all SSE output and extract final response
-sse_output="$(curl -sS "https://chatgpt.com/backend-api/codex/responses" \
+sse_output="$(echo "${request}" | curl -sS "https://chatgpt.com/backend-api/codex/responses" \
   -H "Authorization: Bearer ${access_token}" \
   -H "ChatGPT-Account-ID: ${account_id}" \
   -H "Content-Type: application/json" \
-  -d "${request}" \
+  -d @- \
   --max-time 300
 )"
 

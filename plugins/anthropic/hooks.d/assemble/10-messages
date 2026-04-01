@@ -14,8 +14,8 @@ tool_results="[]"
 flush_tool_results() {
   if [[ "${tool_results}" != "[]" ]]; then
     local msg
-    msg="$(jq -n --argjson content "${tool_results}" '{role: "user", content: $content}')"
-    messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+    msg="$(echo "${tool_results}" | jq '{role: "user", content: .}')"
+    messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
     tool_results="[]"
   fi
 }
@@ -47,8 +47,8 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
   case "${_role}" in
     user)
       flush_tool_results
-      msg="$(jq -n --arg content "${body}" '{role: "user", content: $content}')"
-      messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+      msg="$(printf '%s' "${body}" | jq -Rs '{role: "user", content: .}')"
+      messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
       ;;
     assistant)
       flush_tool_results
@@ -64,8 +64,8 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
           local _flush="${current_text%$'\n'}"
           local _flush_trimmed="${_flush//[$'\n\t ']/}"
           if [[ -n "${_flush_trimmed}" ]]; then
-            content_blocks="$(echo "${content_blocks}" | jq --arg t "${_flush}" \
-              '. + [{type: "text", text: $t}]')"
+            content_blocks="$(printf '%s\n%s' "${content_blocks}" "$(printf '%s' "${_flush}" | jq -Rs '.')" \
+              | jq -s '.[0] + [{type: "text", text: .[1]}]')"
           fi
           current_text=""
         fi
@@ -82,9 +82,10 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
         if ${in_thinking_block} && [[ "${line}" == '```' ]]; then
           in_thinking_block=false
           thinking_text="${thinking_text%$'\n'}"
-          content_blocks="$(echo "${content_blocks}" | jq \
-            --arg thinking "${thinking_text}" --arg signature "${thinking_sig}" \
-            '. + [{type: "thinking", thinking: $thinking, signature: $signature}]')"
+          content_blocks="$(printf '%s\n%s\n%s' "${content_blocks}" \
+            "$(printf '%s' "${thinking_text}" | jq -Rs '.')" \
+            "$(printf '%s' "${thinking_sig}" | jq -Rs '.')" \
+            | jq -s '.[0] + [{type: "thinking", thinking: .[1], signature: .[2]}]')"
           continue
         fi
         if [[ "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
@@ -97,9 +98,9 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
         fi
         if ${in_tool_block} && [[ "${line}" == '```' ]]; then
           in_tool_block=false
-          content_blocks="$(echo "${content_blocks}" | jq \
-            --arg id "${tool_id}" --arg name "${tool_name}" --argjson input "${tool_body}" \
-            '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
+          content_blocks="$(printf '%s\n%s' "${content_blocks}" "${tool_body}" \
+            | jq -s --arg id "${tool_id}" --arg name "${tool_name}" \
+            '.[0] + [{type: "tool_use", id: $id, name: $name, input: .[1]}]')"
           continue
         fi
         if ${in_thinking_block}; then
@@ -119,20 +120,20 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
       else
         msg="$(echo "${content_blocks}" | jq '{role: "assistant", content: .}')"
       fi
-      messages="$(echo "${messages}" | jq --argjson m "${msg}" '. + [$m]')"
+      messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
       ;;
     tool_result)
       if [[ "${_error}" == "true" ]]; then
-        tr="$(jq -n --arg id "${_call_id}" --arg content "${body}" \
-          '{type: "tool_result", tool_use_id: $id, content: $content, is_error: true}')"
+        tr="$(printf '%s' "${body}" | jq -Rs --arg id "${_call_id}" \
+          '{type: "tool_result", tool_use_id: $id, content: ., is_error: true}')"
       else
-        tr="$(jq -n --arg id "${_call_id}" --arg content "${body}" \
-          '{type: "tool_result", tool_use_id: $id, content: $content}')"
+        tr="$(printf '%s' "${body}" | jq -Rs --arg id "${_call_id}" \
+          '{type: "tool_result", tool_use_id: $id, content: .}')"
       fi
-      tool_results="$(echo "${tool_results}" | jq --argjson tr "${tr}" '. + [$tr]')"
+      tool_results="$(printf '%s\n%s' "${tool_results}" "${tr}" | jq -s '.[0] + [.[1]]')"
       ;;
   esac
 done
 
 flush_tool_results
-echo "${payload}" | jq --argjson msgs "${messages}" '. + {messages: $msgs}'
+printf '%s\n%s' "${payload}" "${messages}" | jq -c -s '.[0] + {messages: .[1]}'

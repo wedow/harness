@@ -58,9 +58,9 @@ if [[ -n "${tool_calls}" && "${tool_calls}" != "null" && "${tool_calls}" != "[]"
     body+=$'\n```'
 
     # Build canonical item for the state machine
-    items="$(echo "${items}" | jq \
-      --arg id "${tc_id}" --arg name "${tc_name}" --argjson input "${tc_args}" \
-      '. + [{id: $id, name: $name, input: $input}]')"
+    items="$(printf '%s\n%s' "${items}" "${tc_args}" \
+      | jq -s --arg id "${tc_id}" --arg name "${tc_name}" \
+      '.[0] + [{id: $id, name: $name, input: .[1]}]')"
   done
 fi
 
@@ -82,7 +82,7 @@ MSGEOF
 
 # Return control JSON for the state machine
 if [[ "${stop}" == "tool_calls" ]]; then
-  jq -n --argjson items "${items}" '{next_state: "tool_exec", tool_calls: $items}'
+  echo "${items}" | jq '{next_state: "tool_exec", tool_calls: .}'
 else
-  jq -n --arg output "${content}" '{next_state: "done", output: $output}'
+  printf '%s' "${content}" | jq -Rs '{next_state: "done", output: .}'
 fi

@@ -84,4 +84,4 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
   esac
 done
 
-echo "${payload}" | jq --argjson msgs "${messages}" '. + {messages: $msgs}'
+echo "${messages}" | jq -c --argjson p "${payload}" '$p + {messages: .}'

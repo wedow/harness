@@ -77,4 +77,5 @@ When a task matches a skill's description, call the skill tool with the skill's 
 block="${instructions}"$'\n\n'"${catalog}"
 
 # Append to existing system prompt
-echo "${payload}" | jq --arg skills "${block}" '.system = (.system + "\n\n" + $skills)'
+printf '%s\n%s' "${payload}" "$(printf '%s' "${block}" | jq -Rs '.')" \
+  | jq -s '.[0] + {system: (.[0].system + "\n\n" + .[1])}'

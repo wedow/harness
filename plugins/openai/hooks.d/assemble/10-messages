@@ -11,7 +11,7 @@ msg_dir="${HARNESS_SESSION}/messages"
 messages="[]"
 
 add_msg() {
-  messages="$(echo "${messages}" | jq --argjson m "$1" '. + [$m]')"
+  messages="$(printf '%s\n%s' "${messages}" "$1" | jq -s '.[0] + [.[1]]')"
 }
 
 for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
@@ -39,7 +39,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
 
   case "${_role}" in
     user)
-      add_msg "$(jq -n --arg c "${body}" '{role: "user", content: $c}')"
+      add_msg "$(printf '%s' "${body}" | jq -Rs '{role: "user", content: .}')"
       ;;
     assistant)
       # Parse text and tool_call blocks
@@ -58,9 +58,9 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
         fi
         if ${in_tool_block} && [[ "${line}" == '```' ]]; then
           in_tool_block=false
-          tool_calls="$(echo "${tool_calls}" | jq \
-            --arg id "${tool_id}" --arg name "${tool_name}" --arg args "${tool_body}" \
-            '. + [{id: $id, type: "function", function: {name: $name, arguments: $args}}]')"
+          tool_calls="$(printf '%s\n%s' "${tool_calls}" "$(printf '%s' "${tool_body}" | jq -Rs '.')" \
+            | jq -s --arg id "${tool_id}" --arg name "${tool_name}" \
+            '.[0] + [{id: $id, type: "function", function: {name: $name, arguments: .[1]}}]')"
           continue
         fi
         if ${in_tool_block}; then
@@ -75,22 +75,21 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
       tc_count="$(echo "${tool_calls}" | jq 'length')"
       if (( tc_count > 0 )); then
         if [[ -n "${text_content}" ]]; then
-          add_msg "$(jq -n --arg c "${text_content}" --argjson tc "${tool_calls}" \
-            '{role: "assistant", content: $c, tool_calls: $tc}')"
+          add_msg "$(printf '%s\n%s' "$(printf '%s' "${text_content}" | jq -Rs '.')" "${tool_calls}" \
+            | jq -s '{role: "assistant", content: .[0], tool_calls: .[1]}')"
         else
-          add_msg "$(jq -n --argjson tc "${tool_calls}" \
-            '{role: "assistant", tool_calls: $tc}')"
+          add_msg "$(echo "${tool_calls}" | jq '{role: "assistant", tool_calls: .}')"
         fi
       else
-        add_msg "$(jq -n --arg c "${text_content}" '{role: "assistant", content: $c}')"
+        add_msg "$(printf '%s' "${text_content}" | jq -Rs '{role: "assistant", content: .}')"
       fi
       ;;
     tool_result)
       # OpenAI uses role: "tool" with tool_call_id
-      add_msg "$(jq -n --arg id "${_call_id}" --arg c "${body}" \
-        '{role: "tool", tool_call_id: $id, content: $c}')"
+      add_msg "$(printf '%s' "${body}" | jq -Rs --arg id "${_call_id}" \
+        '{role: "tool", tool_call_id: $id, content: .}')"
       ;;
   esac
 done
 
-echo "${payload}" | jq --argjson msgs "${messages}" '. + {messages: $msgs}'
+printf '%s\n%s' "${payload}" "${messages}" | jq -c -s '.[0] + {messages: .[1]}'

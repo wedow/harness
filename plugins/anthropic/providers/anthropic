@@ -55,13 +55,12 @@ messages="$(echo "${payload}" | jq -c '.messages // []')"
 tools="$(echo "${payload}" | jq -c '.tools // []')"
 
 # Build the API request body (system can be string or array of content blocks)
-request="$(jq -n \
+request="$(echo "${messages}" | jq -c \
   --arg model "${model}" \
   --argjson max_tokens "${ANTHROPIC_MAX_TOKENS}" \
   --argjson system "${system_val}" \
-  --argjson messages "${messages}" \
   --argjson tools "${tools}" \
-  '{model: $model, max_tokens: $max_tokens, system: $system, messages: $messages}
+  '{model: $model, max_tokens: $max_tokens, system: $system, messages: .}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
@@ -184,9 +183,9 @@ if [[ "${streaming}" == true ]]; then
         _api_error="${data}"
         ;;
     esac
-  done < <(curl -sS -N "${ANTHROPIC_API_URL}" \
+  done < <(echo "${request}" | curl -sS -N "${ANTHROPIC_API_URL}" \
     "${_curl_headers[@]}" \
-    -d "${request}" \
+    -d @- \
     --max-time 300
   )
 
@@ -218,9 +217,9 @@ if [[ "${streaming}" == true ]]; then
 fi
 
 # Call the API
-response="$(curl -sS "${ANTHROPIC_API_URL}" \
+response="$(echo "${request}" | curl -sS "${ANTHROPIC_API_URL}" \
   "${_curl_headers[@]}" \
-  -d "${request}" \
+  -d @- \
   --max-time 300
 )"
 

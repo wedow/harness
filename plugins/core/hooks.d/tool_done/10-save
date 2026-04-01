@@ -37,7 +37,7 @@ EOF
 # Route: more tool calls remaining → tool_exec, otherwise → assemble
 remaining="$(echo "${data}" | jq -c '.tool_calls')"
 if [[ "$(echo "${remaining}" | jq 'length')" -gt 0 ]]; then
-  jq -n --argjson tool_calls "${remaining}" '{next_state: "tool_exec", tool_calls: $tool_calls}'
+  echo "${remaining}" | jq '{next_state: "tool_exec", tool_calls: .}'
 else
   echo '{"next_state": "assemble"}'
 fi

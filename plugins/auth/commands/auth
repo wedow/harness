@@ -43,8 +43,8 @@ case "${subcmd}" in
 
     auth_file="$(_auth_file "${local_flag}")"
     existing="$(_read_auth "${auth_file}")"
-    updated="$(echo "${existing}" | jq --arg p "${provider}" --argjson c "${cred}" \
-      '.[$p] = [$c]')"
+    updated="$(printf '%s\n%s' "${existing}" "${cred}" \
+      | jq -s --arg p "${provider}" '.[1] as $c | .[0] | .[$p] = [$c]')"
     mkdir -p "$(dirname "${auth_file}")"
     _tmp="$(mktemp "${auth_file}.XXXXXX")"
     echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${auth_file}"

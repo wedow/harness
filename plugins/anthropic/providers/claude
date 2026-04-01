@@ -103,11 +103,9 @@ payload="$(cat)"
 system="$(echo "${payload}" | jq -r '.system // ""')"
 identity='You are Claude Code, Anthropic'\''s official CLI for Claude.'
 if [[ -n "${system}" ]]; then
-  system_blocks="$(jq -n \
-    --arg identity "${identity}" \
-    --arg system "${system}" \
+  system_blocks="$(printf '%s' "${system}" | jq -Rs --arg identity "${identity}" \
     '[{type: "text", text: $identity, cache_control: {type: "ephemeral"}},
-      {type: "text", text: $system, cache_control: {type: "ephemeral"}}]'
+      {type: "text", text: ., cache_control: {type: "ephemeral"}}]'
   )"
 else
   system_blocks="$(jq -n \
@@ -115,6 +113,6 @@ else
     '[{type: "text", text: $identity, cache_control: {type: "ephemeral"}}]'
   )"
 fi
-payload="$(echo "${payload}" | jq -c --argjson s "${system_blocks}" '.system = $s')"
+payload="$(printf '%s\n%s' "${payload}" "${system_blocks}" | jq -c -s '.[0] + {system: .[1]}')"
 
 echo "${payload}" | "${_anthropic}" ${_stream} "$@"

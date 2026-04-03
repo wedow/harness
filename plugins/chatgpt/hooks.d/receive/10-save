@@ -57,9 +57,9 @@ while IFS= read -r item; do
       body+=$'\n'"${tc_args}"
       body+=$'\n```'
 
-      tool_items="$(echo "${tool_items}" | jq \
-        --arg id "${tc_id}" --arg name "${tc_name}" --argjson input "${tc_args}" \
-        '. + [{id: $id, name: $name, input: $input}]')"
+      tool_items="$(printf '%s\n%s' "${tool_items}" "${tc_args}" \
+        | jq -s --arg id "${tc_id}" --arg name "${tc_name}" \
+        '.[0] + [{id: $id, name: $name, input: .[1]}]')"
       ;;
   esac
 done <<< "$(echo "${response}" | jq -c '.output[]?' 2>/dev/null)"
@@ -94,5 +94,5 @@ EOF
 if [[ "${stop}" == "tool_calls" ]]; then
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
 else
-  jq -n --arg output "${text_output}" '{next_state: "done", output: $output}'
+  printf '%s' "${text_output}" | jq -Rs '{next_state: "done", output: .}'
 fi

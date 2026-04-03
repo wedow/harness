@@ -58,8 +58,9 @@ while IFS= read -r block; do
       body+=$'\n'"\`\`\`tool_call id=${tid} name=${tname}"$'\n'
       body+="${tinput}"$'\n'
       body+='```'$'\n'
-      tool_items="$(echo "${tool_items}" | jq --arg id "${tid}" --arg name "${tname}" \
-        --argjson input "${tinput}" '. + [{id: $id, name: $name, input: $input}]')"
+      tool_items="$(printf '%s\n%s' "${tool_items}" "${tinput}" \
+        | jq -s --arg id "${tid}" --arg name "${tname}" \
+        '.[0] + [{id: $id, name: $name, input: .[1]}]')"
       ;;
   esac
 done <<< "${content_blocks}"
@@ -83,5 +84,5 @@ EOF
 if [[ "${stop}" == "tool_calls" ]]; then
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
 else
-  jq -n --arg output "${text_output}" '{next_state: "done", output: $output}'
+  printf '%s' "${text_output}" | jq -Rs '{next_state: "done", output: .}'
 fi

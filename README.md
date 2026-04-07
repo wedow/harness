@@ -65,7 +65,7 @@ my-command --describe  # one-line human description
 my-command [args...]   # execute the command
 ```
 
-Built-in commands: `agent`, `session`, `tools`, `hooks`, `help`, `version`. The default command (bare `hs` or unrecognized first arg) is `agent`. Override any built-in by placing a same-named executable in a higher-priority `commands/` directory.
+Built-in commands: `agent`, `repl`, `acp`, `acp-stream`, `session`, `tools`, `hooks`, `help`, `version`. On a TTY with no args, the default command is `repl` (interactive); otherwise `agent` (headless one-shot). Unrecognized first arg also falls back to `agent`. Override any built-in by placing a same-named executable in a higher-priority `commands/` directory.
 
 ### Tools
 

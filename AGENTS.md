@@ -69,7 +69,7 @@ Override either by placing a same-named hook in a higher-priority source dir.
 
 ### Five Plugin Types
 
-**Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `agent`, `session`, `tools`, `hooks`, `help`, `version`. The default command (no args or unrecognized first arg) is `agent`.
+**Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `agent`, `repl`, `acp`, `acp-stream`, `session`, `tools`, `hooks`, `help`, `version`. On a TTY with no args, the default command is `repl`; otherwise `agent` (headless one-shot). Unrecognized first arg also falls back to `agent`.
 
 **Tools** (`tools/`): Executables responding to `--schema`, `--describe`, `--exec`. Input is JSON on stdin via `--exec`, output on stdout. Language-agnostic. Core tools: `bash`, `read_file`, `write_file`, `str_replace`, `list_dir`. Additional bundled tools: `agent` (spawn subagent sessions), `skill` (load skill instructions).
 
@@ -90,7 +90,8 @@ Sessions live in `<sessions-dir>/<id>/messages/` as numbered markdown files with
 ### Key Files
 
 - `bin/harness` — core: bootstrap, `call` (hook pipeline runner), state follower, CLI dispatch (~100 SLOC)
-- `plugins/core/commands/` — built-in CLI commands (agent, session, tools, hooks, help, version)
+- `plugins/core/commands/` — built-in CLI commands (agent, repl, acp, acp-stream, session, tools, hooks, help, version)
+- `plugins/core/lib/session.sh` — shared session helpers (sourced by agent, repl, acp)
 - `plugins/core/hooks.d/` — provider-agnostic hooks (resolve, send, tool_exec, tool_done, assemble/tools, assemble/prompts)
 - `plugins/anthropic/hooks.d/` — Anthropic-specific hooks (assemble/messages, receive/save)
 - `plugins/anthropic/providers/anthropic` — Anthropic API call (API key)

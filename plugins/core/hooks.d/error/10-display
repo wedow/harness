@@ -9,7 +9,6 @@ msg="$(echo "${context}" | jq -r '.error // empty' 2>/dev/null)" || true
 
 msg="${msg:-hook pipeline failed (check ${HARNESS_LOG})}"
 
-# Display error on streaming fd so REPL shows it
-[[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '\n\033[31merror: %s\033[0m\n' "${msg}" >&"${HARNESS_STREAM_FD}" 2>/dev/null || true
+[[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg m "${msg}" '{type:"error",message:$m}')" >> "${HARNESS_SESSION}/.stream"
 
 jq -n --arg msg "${msg}" '{output: ("error: " + $msg)}'

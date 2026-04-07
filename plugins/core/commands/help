@@ -42,7 +42,8 @@ usage:
   hs "do something"         one-shot: run agent with a message
   hs                        interactive REPL (new session)
   hs <session-id>           resume a session
-  hs agent [args...]        explicit (same as above)
+  hs acp                    ACP JSON-RPC adapter (stdio)
+  hs agent "do something"   one-shot (explicit command name)
   hs session <sub> [args]  manage sessions (list, show <id>, dir [id])
   hs tools                 list discovered tools
   hs hooks [stage]         list discovered hooks
@@ -62,7 +63,7 @@ for src in "${_HARNESS_SOURCES[@]}"; do
   done
 done
 # Show any commands not already listed in the usage block
-builtin_cmds="agent session tools hooks version help"
+builtin_cmds="acp agent session tools hooks version help"
 for name in $(printf '%s\n' "${!cmd_map[@]}" | sort); do
   [[ " ${builtin_cmds} " == *" ${name} "* ]] && continue
   path="${cmd_map[$name]}"

@@ -1,0 +1,120 @@
+#!/usr/bin/env bash
+# acp — ACP JSON-RPC stdio adapter
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "ACP JSON-RPC stdio adapter"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+
+# --- JSON-RPC helpers ---
+
+_rpc_result() {
+  local id="$1" result="$2"
+  jq -c -n --argjson id "$id" --argjson result "$result" \
+    '{"jsonrpc":"2.0","id":$id,"result":$result}'
+}
+
+_rpc_error() {
+  local id="$1" code="$2" message="$3"
+  jq -c -n --argjson id "$id" --arg code "$code" --arg msg "$message" \
+    '{"jsonrpc":"2.0","id":$id,"error":{"code":($code|tonumber),"message":$msg}}'
+}
+
+_rpc_notify() {
+  local method="$1" params="$2"
+  jq -c -n --arg method "$method" --argjson params "$params" \
+    '{"jsonrpc":"2.0","method":$method,"params":$params}'
+}
+
+# --- Main read loop ---
+
+while IFS= read -r line; do
+  [[ -z "${line}" ]] && continue
+  method="$(echo "${line}" | jq -r '.method // empty')" || continue
+  id="$(echo "${line}" | jq -c '.id // empty')" || continue
+  [[ -z "${id}" ]] && continue
+  params="$(echo "${line}" | jq -c '.params // {}')" || continue
+
+  case "${method}" in
+    initialize)
+      _rpc_result "${id}" "$(jq -c -n --arg v "${HARNESS_VERSION}" '{
+        protocolVersion: 1,
+        agentCapabilities: {loadSession: false},
+        agentInfo: {name: "harness", title: "Harness", version: $v},
+        authMethods: []
+      }')"
+      ;;
+    session/new)
+      cwd="$(echo "${params}" | jq -r '.cwd // empty')"
+      [[ -z "${cwd}" ]] && cwd="${PWD}"
+      _refresh_sources
+      _resolve="$(jq -n --arg p "${HARNESS_PROVIDER}" --arg m "${HARNESS_MODEL}" \
+        '{provider: $p, model: $m}' | call resolve)" || {
+        _rpc_error "${id}" -32603 "provider resolution failed"; continue
+      }
+      HARNESS_PROVIDER="$(echo "${_resolve}" | jq -r '.provider // empty')"
+      HARNESS_MODEL="$(echo "${_resolve}" | jq -r '.model // empty')"
+      export HARNESS_PROVIDER HARNESS_MODEL
+      session_dir="$(_new_session "${cwd}")"
+      session_id="$(basename "${session_dir}")"
+      _rpc_result "${id}" "$(jq -c -n --arg sid "${session_id}" '{sessionId: $sid}')"
+      ;;
+    session/prompt)
+      _sid="$(echo "${params}" | jq -r '.sessionId // empty')"
+      _prompt="$(echo "${params}" | jq -r '.prompt[0].text // empty')"
+      if [[ -z "${_sid}" ]]; then
+        _rpc_error "${id}" -32602 "missing sessionId"; continue
+      fi
+      _sdir="${HARNESS_SESSIONS}/${_sid}"
+      if [[ ! -d "${_sdir}" ]]; then
+        _rpc_error "${id}" -32602 "session not found: ${_sid}"; continue
+      fi
+
+      # Save user message and prepare stream file
+      _save_message "${_sdir}" "${_prompt}"
+      > "${_sdir}/.stream"
+
+      # Spawn agent in isolated process group (cancellable)
+      _pidfile="${_sdir}/.pid"
+      rm -f "${_pidfile}"
+      export SESSION_DIR="${_sdir}"
+      setsid bash -c "
+        echo \$\$ > \"${_pidfile}\"
+        source \"${HARNESS_ROOT}/bin/harness\"
+        _refresh_sources
+        agent_loop \"${_sdir}\"
+      " &>/dev/null &
+      for _i in $(seq 1 50); do [[ -s "${_pidfile}" ]] && break; sleep 0.1; done
+      _active_pgid="$(cat "${_pidfile}" 2>/dev/null || echo "")"
+
+      # Save stdin on fd 4 for cancel polling, open tail on fd 5
+      exec 4<&0
+      exec 5< <(tail -c +1 -f "${_sdir}/.stream" 2>/dev/null)
+      _tail_pid=$!
+
+      _cleanup_acp() {
+        [[ -n "${_active_pgid:-}" ]] && kill -TERM -- -"${_active_pgid}" 2>/dev/null || true
+        [[ -n "${_tail_pid:-}" ]] && kill "${_tail_pid}" 2>/dev/null || true
+        exec 5<&- 2>/dev/null || true
+        exec 4<&- 2>/dev/null || true
+        wait 2>/dev/null || true
+      }
+      trap _cleanup_acp EXIT HUP TERM PIPE
+
+      # Source stream translator fresh each prompt (picks up code changes)
+      source "${HARNESS_ROOT}/plugins/core/commands/acp-stream"
+
+      _acp_stream_loop "${_sid}" "${_active_pgid}"
+      _acp_stop="${_ACP_STOP_REASON}"
+
+      _rpc_result "${id}" "$(jq -c -n --arg sid "${_sid}" --arg sr "${_acp_stop}" \
+        '{sessionId: $sid, stopReason: $sr}')"
+      ;;
+    *)
+      if [[ -n "${id}" ]]; then
+        _rpc_error "${id}" -32601 "method not found: ${method}"
+      fi
+      ;;
+  esac
+done

@@ -23,8 +23,9 @@ bin/harness hooks [stage]            # list discovered hooks
 bin/harness session list             # list sessions
 bin/harness session show <id>        # inspect session
 
-# There is no test suite or linter.
-# Verify changes by running the agent and inspecting session files.
+# Tests
+spec/run                             # run all tests
+SPEC_DIR=spec bash spec/tests/NAME/test.sh  # single test
 ```
 
 The `bin/hs` symlink is an alias for `bin/harness`.
@@ -49,9 +50,7 @@ Discovery is fully dynamic and hookable — `_refresh_sources` runs every loop i
 
 ### Streaming & Parallel Tool Dispatch
 
-Streaming uses fd 3 as a side-channel that bypasses the buffered hook pipeline. The agent command opens fd 3 to the terminal (or `/dev/null` when piped), and providers write text deltas to fd 3 for real-time display while outputting the complete reconstructed response on stdout. The core state machine and hook runner require zero changes — fd 3 passes through all levels of `$()` command substitution since only fd 1 is captured.
-
-Streaming is automatic when stdout is a TTY, off when piped. `HARNESS_STREAM=1` forces streaming in non-TTY contexts. Variant configs can set `stream=always` to force streaming regardless (needed when the API requires `stream=true` for high `max_tokens`).
+Streaming output is written to `${HARNESS_SESSION}/.stream` as JSONL. Providers append single-line JSON events during each turn — `text` (token deltas), `thinking` (reasoning), `tool_start`/`tool_done` (tool execution), `stop` (turn end), `error`, `done` (session end). The send hook passes `--stream` to any provider that supports it. The filesystem is the streaming interface.
 
 During streaming, the send hook dispatches tool calls for parallel execution via a fifo. A background dispatcher reads completed tool calls and executes them immediately. Results are written to `${session}/.tool_dispatch/`. The `tool_exec` hook checks for pre-computed results before executing — making pre-dispatched tools instant. Anthropic dispatches per-tool during streaming (at `content_block_stop`), while OpenAI dispatches all tools after the stream ends (no per-tool completion event in the protocol).
 

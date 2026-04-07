@@ -80,6 +80,8 @@ tokens_out: ${tokens_out}
 ${body}
 MSGEOF
 
+[[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg s "${stop}" --arg seq "${seq_pad}" '{type:"stop",reason:$s,seq:$seq}')" >> "${HARNESS_SESSION}/.stream"
+
 # Return control JSON for the state machine
 if [[ "${stop}" == "tool_calls" ]]; then
   echo "${items}" | jq '{next_state: "tool_exec", tool_calls: .}'

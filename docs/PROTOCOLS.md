@@ -375,6 +375,50 @@ timestamp: 2026-03-24T16:05:30-04:00
 List the files
 ```
 
+## Streaming protocol (`.stream`)
+
+The agent writes real-time JSONL events to `${HARNESS_SESSION}/.stream` during each turn. All events are single-line JSON (`jq -c` output), one per line. The file is the sole streaming interface -- clients (REPL, ACP adapter) tail it for live output.
+
+### Lifecycle
+
+The send hook truncates `.stream` at the start of each turn. Providers append `text`, `thinking`, and `tool_start` events during streaming. Receive hooks append a `stop` event after saving the assistant message. The `tool_done` hook appends after each tool execution. The agent loop appends `{"type":"done"}` when the loop exits. Consumers break on `done`.
+
+### Event types
+
+| Type | Fields | Source |
+|------|--------|--------|
+| `text` | `text` | Providers (token delta) |
+| `thinking` | `text` | Providers (reasoning delta) |
+| `tool_start` | `id`, `name`, `input` | Providers (tool call dispatched) |
+| `tool_output` | `text` | `tool_exec` hook (formatted result) |
+| `tool_done` | `id`, `name`, `seq`, `error` | `tool_done` hook |
+| `stop` | `reason`, `seq` | Receive hooks |
+| `error` | `message` | Error hook |
+| `done` | *(none)* | `agent_loop` |
+
+### Example `.stream` file
+
+```jsonl
+{"type":"text","text":"Hello "}
+{"type":"text","text":"world."}
+{"type":"thinking","text":"Let me consider..."}
+{"type":"tool_start","id":"toolu_abc","name":"bash","input":{"command":"ls"}}
+{"type":"tool_output","text":"  file1.txt\n  file2.txt"}
+{"type":"tool_done","id":"toolu_abc","name":"bash","seq":"0003","error":"false"}
+{"type":"stop","reason":"tool_calls","seq":"0002"}
+{"type":"text","text":"Here are the files."}
+{"type":"stop","reason":"end","seq":"0004"}
+{"type":"done"}
+```
+
+### `stop` reasons
+
+Normalized across providers: `end` (normal completion), `tool_calls` (tools pending), `length` (max tokens), `error`.
+
+### Writing events
+
+All writes are guarded by `[[ -n "${HARNESS_SESSION:-}" ]]` and append with `>>`. Providers write `text`/`thinking`/`tool_start`. Hooks write `tool_output`/`stop`/`tool_done`/`error`. The core loop writes `done`.
+
 ## Discovery order
 
 Plugin sources are searched lowest to highest priority:

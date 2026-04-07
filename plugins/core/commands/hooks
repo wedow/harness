@@ -9,6 +9,7 @@ esac
 source "${HARNESS_ROOT}/bin/harness"
 
 stage="${1:-}"
+found=0
 _refresh_sources
 search_dirs=()
 for src in "${_HARNESS_SOURCES[@]}"; do
@@ -19,7 +20,7 @@ for sd in "${search_dirs[@]}"; do
   if [[ -n "${stage}" ]]; then
     [[ -d "${sd}/${stage}" ]] || continue
     for f in "${sd}/${stage}"/*; do
-      [[ -x "$f" ]] && echo "  ${stage}/$(basename "$f")  [$f]"
+      [[ -x "$f" ]] && { echo "  ${stage}/$(basename "$f")  [$f]"; found=1; }
     done
   else
     for stage_dir in "${sd}"/*/; do
@@ -31,3 +32,8 @@ for sd in "${search_dirs[@]}"; do
     done
   fi
 done
+
+if [[ -n "${stage}" && "${found}" -eq 0 ]]; then
+  echo "harness: unknown stage '${stage}'" >&2
+  exit 1
+fi

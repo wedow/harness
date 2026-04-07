@@ -59,18 +59,22 @@ JSON
     fi
 
     # Perform replacement using perl for reliable multi-line handling
-    perl -i -0pe "
-      \$old = quotemeta(q{${old_str}});
-      s/\$old/\Q${new_str}\E/s;
-    " "${path}" 2>/dev/null || {
+    # Single-quoted script body prevents bash expansion; env vars pass data safely
+    OLD_STR="${old_str}" NEW_STR="${new_str}" perl -i -0pe '
+      my $old = quotemeta($ENV{OLD_STR});
+      my $new = $ENV{NEW_STR};
+      s/$old/$new/s;
+    ' "${path}" 2>/dev/null || {
       # Fallback: python if perl isn't available
-      python3 -c "
-import sys
-p = '${path}'
+      HARNESS_FILE_PATH="${path}" OLD_STR="${old_str}" NEW_STR="${new_str}" python3 -c '
+import os
+p = os.environ["HARNESS_FILE_PATH"]
+old = os.environ["OLD_STR"]
+new = os.environ["NEW_STR"]
 with open(p) as f: content = f.read()
-content = content.replace('''${old_str}''', '''${new_str}''', 1)
-with open(p, 'w') as f: f.write(content)
-" 2>/dev/null || {
+content = content.replace(old, new, 1)
+with open(p, "w") as f: f.write(content)
+' 2>/dev/null || {
         echo "error: replacement failed (need perl or python3)"
         exit 1
       }

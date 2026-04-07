@@ -120,8 +120,6 @@ if [[ "${streaming}" == true ]]; then
           block_id="$(echo "${data}" | jq -r '.content_block.id // ""')"
           block_name="$(echo "${data}" | jq -r '.content_block.name // ""')"
           block_input=""
-        elif [[ "${block_type}" == "thinking" && -n "${HARNESS_STREAM_FD:-}" ]]; then
-          printf '\033[2m' >&"${HARNESS_STREAM_FD}"
         fi
         ;;
       content_block_delta)
@@ -131,13 +129,13 @@ if [[ "${streaming}" == true ]]; then
             text="$(echo "${data}" | jq -j '.delta.text // ""'; printf x)"
             text="${text%x}"
             block_text+="${text}"
-            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${text}" >&"${HARNESS_STREAM_FD}"
+            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
             ;;
           thinking_delta)
             text="$(echo "${data}" | jq -j '.delta.thinking // ""'; printf x)"
             text="${text%x}"
             block_thinking+="${text}"
-            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${text}" >&"${HARNESS_STREAM_FD}"
+            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"thinking",text:$t}')" >> "${HARNESS_SESSION}/.stream"
             ;;
           signature_delta)
             block_signature+="$(echo "${data}" | jq -r '.delta.signature // ""')"
@@ -157,7 +155,6 @@ if [[ "${streaming}" == true ]]; then
             content="$(echo "${content}" | jq -c \
               --arg t "${block_thinking}" --arg s "${block_signature}" \
               '. + [{type: "thinking", thinking: $t, signature: $s}]')"
-            [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '\033[0m\n' >&"${HARNESS_STREAM_FD}"
             ;;
           tool_use)
             parsed_input="$(echo "${block_input}" | jq -c '.' 2>/dev/null || echo '{}')"
@@ -169,6 +166,7 @@ if [[ "${streaming}" == true ]]; then
                 --argjson input "${parsed_input}" \
                 '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
             fi
+            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
             ;;
         esac
         block_type=""

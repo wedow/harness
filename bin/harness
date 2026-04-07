@@ -88,6 +88,7 @@ call() {
 agent_loop() {
   local session_dir="$1"
   export SESSION_DIR="${session_dir}"
+  trap 'printf "%s\n" "{\"type\":\"done\"}" >> "${SESSION_DIR}/.stream" 2>/dev/null' EXIT
   local state="start" context='{}' result="" rc=0 iterations=0
 
   while [[ -n "${state}" ]]; do
@@ -105,11 +106,8 @@ agent_loop() {
     (( ++iterations > HARNESS_MAX_TURNS * 3 )) && { _log "safety: exceeded max iterations"; break; }
   done
 
-  # Print output unless streaming already displayed it
-  if [[ -z "${HARNESS_STREAM_FD:-}" ]]; then
-    local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
-    [[ -n "${output}" ]] && printf '%s\n' "${output}"
-  fi
+  local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
+  [[ -n "${output}" ]] && printf '%s\n' "${output}"
 }
 
 # --------------------------------------------------------------------------- #
@@ -144,6 +142,15 @@ main() {
 
   local cmd="${1:-agent}"
   case "${cmd}" in --help|-h) cmd="help" ;; --version|-v) cmd="version" ;; esac
+
+  # Interactive TTY with no message → REPL instead of agent
+  if [[ -t 0 ]]; then
+    if [[ $# -eq 0 ]]; then
+      cmd="repl"
+    elif [[ $# -eq 1 ]] && [[ -d "${HARNESS_SESSIONS}/${1}" ]]; then
+      cmd="repl"; set -- repl "$@"
+    fi
+  fi
 
   local cmd_path="$(_find_command "${cmd}")"
   if [[ -n "${cmd_path}" ]]; then

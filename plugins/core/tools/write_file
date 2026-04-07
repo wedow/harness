@@ -33,6 +33,8 @@ JSON
     path="$(echo "${input}" | jq -r '.path')"
     content="$(echo "${input}" | jq -r '.content')"
 
+    [[ -n "${path}" && "${path}" != "null" ]] || { echo "error: path is required"; exit 1; }
+
     if [[ "${path}" != /* ]]; then
       path="${HARNESS_CWD:-${PWD}}/${path}"
     fi

@@ -1,0 +1,81 @@
+#!/usr/bin/env bash
+# acp-stream — stream event to ACP notification translator
+# Sourced fresh on each session/prompt so code changes are picked up live.
+
+_acp_stream_loop() {
+  local sid="$1" pgid="$2"
+  local _stop_reason="" _cancelled=false
+
+  while true; do
+    if ! IFS= read -t 2 -r _ev <&5; then
+      kill -0 "${pgid}" 2>/dev/null || break
+      continue
+    fi
+    local _etype
+    _etype="$(echo "${_ev}" | jq -r '.type // empty' 2>/dev/null)" || continue
+    case "${_etype}" in
+      text)
+        _rpc_notify "session/update" "$(echo "${_ev}" | jq -c '{
+          sessionId: "'"${sid}"'",
+          update: {sessionUpdate: "agent_message_chunk", content: {type: "text", text: .text}}
+        }')"
+        ;;
+      thinking)
+        _rpc_notify "session/update" "$(echo "${_ev}" | jq -c '{
+          sessionId: "'"${sid}"'",
+          update: {sessionUpdate: "agent_thought_chunk", content: {type: "text", text: .text}}
+        }')"
+        ;;
+      tool_start)
+        local _tool_kind="other"
+        case "$(echo "${_ev}" | jq -r '.name')" in
+          bash) _tool_kind="execute" ;;
+          read_file|list_dir) _tool_kind="read" ;;
+          write_file|str_replace) _tool_kind="edit" ;;
+        esac
+        _rpc_notify "session/update" "$(echo "${_ev}" | jq -c --arg k "${_tool_kind}" '{
+          sessionId: "'"${sid}"'",
+          update: {sessionUpdate: "tool_call", toolCallId: .id, title: .name, kind: $k, status: "in_progress"}
+        }')"
+        ;;
+      tool_done)
+        _rpc_notify "session/update" "$(echo "${_ev}" | jq -c '{
+          sessionId: "'"${sid}"'",
+          update: {sessionUpdate: "tool_call_update", toolCallId: .id, title: .name, status: (if .error == "true" then "failed" else "completed" end)}
+        }')"
+        ;;
+      stop)
+        _stop_reason="$(echo "${_ev}" | jq -r '.reason // empty')"
+        ;;
+      error) _stop_reason="error" ;;
+      done) break ;;
+    esac
+
+    # Poll for cancel on fd 4
+    if IFS= read -t 0.05 -r _cancel_line <&4 2>/dev/null; then
+      local _cancel_method
+      _cancel_method="$(echo "${_cancel_line}" | jq -r '.method // empty' 2>/dev/null)" || true
+      if [[ "${_cancel_method}" == "session/cancel" ]]; then
+        [[ -n "${pgid}" ]] && kill -TERM -- -"${pgid}" 2>/dev/null || true
+        _cancelled=true
+        break
+      fi
+    fi
+  done
+
+  # Cleanup
+  trap - EXIT HUP TERM PIPE
+  _cleanup_acp
+
+  # Map stop reason to ACP
+  if [[ "${_cancelled}" == "true" ]]; then
+    _ACP_STOP_REASON="cancelled"
+  else
+    case "${_stop_reason}" in
+      end)    _ACP_STOP_REASON="end_turn" ;;
+      error)  _ACP_STOP_REASON="error" ;;
+      length) _ACP_STOP_REASON="max_tokens" ;;
+      *)      _ACP_STOP_REASON="end_turn" ;;
+    esac
+  fi
+}

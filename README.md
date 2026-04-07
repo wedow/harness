@@ -228,7 +228,6 @@ Provider-specific assemble hooks (e.g., `plugins/anthropic/hooks.d/assemble/10-m
 | `HARNESS_MODEL` | auto from provider `--defaults` | Model identifier |
 | `HARNESS_PROVIDER` | auto: first provider with credentials | Provider plugin name |
 | `HARNESS_MAX_TURNS` | `100` | Max loop iterations |
-| `HARNESS_STREAM` | _(unset)_ | Set to `1` to force streaming in non-TTY mode |
 
 Provider-specific env vars (API keys, endpoints, etc.) are listed by `hs help` and documented via each provider's `--env` flag.
 

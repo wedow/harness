@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+# repl — interactive agent session
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "interactive agent REPL"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+
+# --- Provider resolution (same as agent command) ---
+_refresh_sources
+_resolve="$(jq -n --arg p "${HARNESS_PROVIDER}" --arg m "${HARNESS_MODEL}" \
+  '{provider: $p, model: $m}' | call resolve)" || {
+  _err="$(echo "${_resolve}" | jq -r '.error // empty' 2>/dev/null)" || true
+  _die "${_err:-provider resolution failed}"
+}
+HARNESS_PROVIDER="$(echo "${_resolve}" | jq -r '.provider // empty')"
+HARNESS_MODEL="$(echo "${_resolve}" | jq -r '.model // empty')"
+export HARNESS_PROVIDER HARNESS_MODEL
+
+# --- Session setup ---
+session_dir=""
+if [[ -n "${1:-}" && -d "${HARNESS_SESSIONS}/${1}" ]]; then
+  session_dir="${HARNESS_SESSIONS}/${1}"
+  shift
+fi
+if [[ -z "${session_dir}" ]]; then
+  session_dir="$(_new_session)"
+fi
+export SESSION_DIR="${session_dir}" HARNESS_SESSION="${session_dir}"
+
+echo "session: $(basename "${session_dir}")" >&2
+[[ -n "${HARNESS_PROVIDER}" ]] && echo "provider: ${HARNESS_PROVIDER}" >&2
+[[ -n "${HARNESS_MODEL}" ]] && echo "model: ${HARNESS_MODEL}" >&2
+
+# --- Stream renderer ---
+_render_stream() {
+  local stream_file="$1" agent_pid="$2"
+  # Use exec fd + process substitution to avoid pipe subshell.
+  # Pipe form (tail | while) leaks tail processes because break
+  # only exits the subshell, not the tail.
+  exec 5< <(tail -c +1 -f "${stream_file}" 2>/dev/null)
+  local tail_pid=$!
+  local event etype last_type=""
+  while true; do
+    if ! IFS= read -t 2 -r event <&5; then
+      kill -0 "${agent_pid}" 2>/dev/null || break
+      continue
+    fi
+    etype="$(echo "${event}" | jq -r '.type // empty' 2>/dev/null)" || continue
+    # Extract text with sentinel to preserve trailing newlines (command
+    # substitution strips them, eating \n-only deltas entirely).
+    local _t
+    case "${etype}" in
+      text)
+        [[ "${last_type}" == "thinking" ]] && printf '\n'
+        _t="$(echo "${event}" | jq -j '.text'; printf x)"; printf '%s' "${_t%x}"
+        last_type=text ;;
+      thinking)
+        _t="$(echo "${event}" | jq -j '.text'; printf x)"; printf '\033[2m%s\033[0m' "${_t%x}"
+        last_type=thinking ;;
+      tool_start)
+        printf '\n\033[90m[tool: %s]\033[0m ' "$(echo "${event}" | jq -r '.name')"
+        last_type=tool_start ;;
+      tool_done)
+        if [[ "$(echo "${event}" | jq -r '.error')" == "true" ]]; then
+          printf '\n\033[31m(error)\033[0m\n'
+        else
+          printf '\n\033[32m(done)\033[0m\n'
+        fi
+        last_type=tool_done ;;
+      tool_output)
+        _t="$(echo "${event}" | jq -j '.text'; printf x)"; printf '\n%s' "${_t%x}"
+        last_type=tool_output ;;
+      error)
+        printf '\n\033[31merror: %s\033[0m\n' "$(echo "${event}" | jq -r '.message')"
+        last_type=error ;;
+      done) break ;;
+    esac
+  done
+  exec 5<&-
+  kill "${tail_pid}" 2>/dev/null || true
+  wait "${tail_pid}" 2>/dev/null || true
+}
+
+# --- REPL loop ---
+# Redirect hook logs to file so they don't interleave with stream output
+export HARNESS_LOG="${session_dir}/repl.log"
+touch "${session_dir}/.stream"
+
+agent_pid=""
+_cleanup_repl() {
+  [[ -n "${agent_pid}" ]] && kill "${agent_pid}" 2>/dev/null || true
+  wait 2>/dev/null || true
+}
+trap _cleanup_repl EXIT HUP TERM INT
+
+while true; do
+  printf '\n\033[1;36mYou:\033[0m '
+  IFS= read -r input || break
+  [[ -z "${input}" ]] && continue
+  [[ "${input}" == "/quit" || "${input}" == "/exit" ]] && break
+  [[ "${input}" == "/session" ]] && { echo "${session_dir}"; continue; }
+
+  _save_message "${session_dir}" "${input}"
+  printf '\033[1;33mAgent:\033[0m '
+
+  > "${session_dir}/.stream"
+
+  agent_loop "${session_dir}" >/dev/null &
+  agent_pid=$!
+  _render_stream "${session_dir}/.stream" "${agent_pid}"
+  wait "${agent_pid}" 2>/dev/null || true
+  agent_pid=""
+  echo
+done

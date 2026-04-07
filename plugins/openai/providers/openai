@@ -104,7 +104,7 @@ if [[ "${streaming}" == true ]]; then
     delta_content="${delta_content%x}"
     if [[ -n "${delta_content}" ]]; then
       text_content+="${delta_content}"
-      [[ -n "${HARNESS_STREAM_FD:-}" ]] && printf '%s' "${delta_content}" >&"${HARNESS_STREAM_FD}"
+      [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${delta_content}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
     fi
 
     # Tool call deltas
@@ -148,6 +148,14 @@ if [[ "${streaming}" == true ]]; then
       echo "${_parsed}" | jq -c \
         --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" \
         '{id: $id, name: $name, input: .}' > "${HARNESS_TOOL_FIFO}"
+    done
+  fi
+
+  # Write tool_start events to .stream
+  if [[ ${#tc_ids[@]} -gt 0 && -n "${HARNESS_SESSION:-}" ]]; then
+    for _didx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
+      _parsed="$(echo "${tc_args[$_didx]}" | jq -c '.' 2>/dev/null || echo '{}')"
+      printf '%s\n' "$(jq -c -n --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" --argjson input "${_parsed}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
     done
   fi
 

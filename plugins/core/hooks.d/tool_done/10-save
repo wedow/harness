@@ -34,6 +34,8 @@ error: ${error}
 ${result}
 EOF
 
+[[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${call_id}" --arg name "${tool}" --arg seq "${seq}" --arg error "${error}" '{type:"tool_done",id:$id,name:$name,seq:$seq,error:$error}')" >> "${HARNESS_SESSION}/.stream"
+
 # Route: more tool calls remaining → tool_exec, otherwise → assemble
 remaining="$(echo "${data}" | jq -c '.tool_calls')"
 if [[ "$(echo "${remaining}" | jq 'length')" -gt 0 ]]; then

@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# agent — run the agent (interactive or one-shot)
+# agent — run the agent (headless, one-shot)
 set -euo pipefail
 
-case "${1:-}" in --describe) echo "run the agent (interactive or one-shot)"; exit 0 ;; esac
+case "${1:-}" in --describe) echo "run the agent (headless, one-shot)"; exit 0 ;; esac
 
 source "${HARNESS_ROOT}/bin/harness"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
 
 # --- Provider resolution (hookable resolve stage) ---
 _refresh_sources
@@ -17,87 +18,21 @@ HARNESS_PROVIDER="$(echo "${_resolve}" | jq -r '.provider // empty')"
 HARNESS_MODEL="$(echo "${_resolve}" | jq -r '.model // empty')"
 export HARNESS_PROVIDER HARNESS_MODEL
 
-# --- Session helpers (inlined, private) ---
-
-_new_session() {
-  local id; id="$(date +%Y%m%d-%H%M%S)-$$"
-  local dir="${HARNESS_SESSIONS}/${id}"
-  mkdir -p "${dir}/messages"
-  cat > "${dir}/session.conf" <<EOF
-id=${id}
-model=${HARNESS_MODEL}
-provider=${HARNESS_PROVIDER}
-created=$(date -Iseconds)
-cwd=${PWD}
-EOF
-  echo "${dir}"
-}
-
-_next_seq() {
-  local dir="$1"
-  local last; last="$(ls -1 "${dir}/messages/" 2>/dev/null | sort -n | tail -1)"
-  if [[ -z "${last}" ]]; then echo "0001"
-  else printf '%04d' $(( 10#${last%%-*} + 1 )); fi
-}
-
-_save_message() {
-  local dir="$1" content="$2"
-  local seq; seq="$(_next_seq "${dir}")"
-  cat > "${dir}/messages/${seq}-user.md" <<EOF
----
-role: user
-seq: ${seq}
-timestamp: $(date -Iseconds)
----
-${content}
-EOF
-}
-
-# --- Streaming setup ---
-# fd 3 → terminal for real-time token display; /dev/null when piped
-# HARNESS_STREAM=1 forces streaming on (for non-TTY contexts)
-if [[ -t 1 || "${HARNESS_STREAM:-}" == "1" ]]; then
-  exec 3>&1
-  export HARNESS_STREAM_FD=3
-else
-  exec 3>/dev/null
-  export HARNESS_STREAM_FD=""
-fi
-
 # --- Main ---
-
-# Determine mode
 session_dir=""
 message=""
-mode=""
 
 if [[ -n "${1:-}" && -d "${HARNESS_SESSIONS}/${1}" ]]; then
-  # Resume existing session
   session_dir="${HARNESS_SESSIONS}/${1}"
   shift
-  if (( $# > 0 )); then
-    message="$*"
-    mode="oneshot"
-  elif [[ ! -t 0 ]]; then
-    message="$(cat)"
-    mode="oneshot"
-  else
-    mode="repl"
-  fi
-elif (( $# > 0 )); then
-  # One-shot with args
-  message="$*"
-  mode="oneshot"
-elif [[ ! -t 0 ]]; then
-  # One-shot from stdin
-  message="$(cat)"
-  mode="oneshot"
-else
-  # Interactive REPL, new session
-  mode="repl"
 fi
 
-# Create session if needed
+if (( $# > 0 )); then
+  message="$*"
+elif [[ ! -t 0 ]]; then
+  message="$(cat)"
+fi
+
 if [[ -z "${session_dir}" ]]; then
   session_dir="$(_new_session)"
   echo "session: $(basename "${session_dir}")" >&2
@@ -105,23 +40,12 @@ if [[ -z "${session_dir}" ]]; then
   [[ -n "${HARNESS_MODEL}" ]] && echo "model: ${HARNESS_MODEL}" >&2
 fi
 
-# One-shot
-if [[ "${mode}" == "oneshot" ]]; then
-  _save_message "${session_dir}" "${message}"
-  agent_loop "${session_dir}"
-  exit 0
+# No message + TTY stdin = print usage (REPL is a separate command)
+if [[ -z "${message}" && -t 0 ]]; then
+  echo "usage: harness [session-id] <message>" >&2
+  echo "       echo 'message' | harness" >&2
+  exit 1
 fi
 
-# REPL
-while true; do
-  printf '\n\033[1;36mYou:\033[0m '
-  IFS= read -r input || break
-  [[ -z "${input}" ]] && continue
-  [[ "${input}" == "/quit" || "${input}" == "/exit" ]] && break
-  [[ "${input}" == "/session" ]] && { echo "${session_dir}"; continue; }
-
-  _save_message "${session_dir}" "${input}"
-  printf '\033[1;33mAgent:\033[0m '
-  agent_loop "${session_dir}"
-  echo
-done
+[[ -n "${message}" ]] && _save_message "${session_dir}" "${message}"
+agent_loop "${session_dir}"

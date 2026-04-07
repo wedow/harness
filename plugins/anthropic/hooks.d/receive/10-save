@@ -80,6 +80,8 @@ tokens_out: ${output_tokens}
 ${body}
 EOF
 
+[[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg s "${stop}" --arg seq "${seq}" '{type:"stop",reason:$s,seq:$seq}')" >> "${HARNESS_SESSION}/.stream"
+
 # Return control JSON
 if [[ "${stop}" == "tool_calls" ]]; then
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'

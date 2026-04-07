@@ -40,7 +40,6 @@ if [[ -z "${provider_bin}" ]]; then
     url="$(grep '^url=' "${conf}" | head -1 | cut -d= -f2-)"
     auth_env="$(grep '^auth_env=' "${conf}" | head -1 | cut -d= -f2-)"
     max_tokens="$(grep '^max_tokens=' "${conf}" | head -1 | cut -d= -f2- || true)"
-    stream_conf="$(grep '^stream=' "${conf}" | head -1 | cut -d= -f2- || true)"
     provider_bin="$(_find_bin "${protocol}")"
     # Map variant config to protocol env vars
     proto_upper="$(echo "${protocol}" | tr '[:lower:]' '[:upper:]')"
@@ -52,6 +51,10 @@ if [[ -z "${provider_bin}" ]]; then
       cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
       [[ -f "${cache}" ]] && key="$(jq -r ".\"${HARNESS_PROVIDER}\"[0].key // .\"${HARNESS_PROVIDER}\"[0].token // empty" "${cache}" 2>/dev/null)" || true
     fi
+    if [[ -n "${auth_env}" && -z "${key}" ]]; then
+      jq -n --arg msg "${auth_env} not set — run: hs auth set ${HARNESS_PROVIDER}" '{error: $msg}'
+      exit 1
+    fi
     [[ -n "${key}" ]] && export "${proto_upper}_API_KEY=${key}"
   fi
 fi
@@ -61,10 +64,8 @@ if [[ -z "${provider_bin}" ]]; then
   exit 1
 fi
 
-# Stream flag: pass --stream only when provider supports it
 stream_flag=""
-if [[ "${stream_conf:-}" == "always" ]] || \
-   { [[ -n "${HARNESS_STREAM_FD:-}" ]] && grep -q -- '--stream' "${provider_bin}" 2>/dev/null; }; then
+if grep -q -- '--stream' "${provider_bin}" 2>/dev/null; then
   stream_flag="--stream"
 fi
 
@@ -126,17 +127,11 @@ fi
 err_file="$(mktemp)"
 trap 'rm -f "${err_file}"; _cleanup_dispatch' EXIT
 
+[[ -n "${HARNESS_SESSION:-}" ]] && > "${HARNESS_SESSION}/.stream"
+
 if response="$(echo "${payload}" | "${provider_bin}" ${stream_flag} 2>"${err_file}")"; then
   _cleanup_dispatch
   cat "${err_file}" >> "${HARNESS_LOG}"
-  # Fallback: display text for non-streaming providers in TTY mode
-  if [[ -n "${HARNESS_STREAM_FD:-}" && -z "${stream_flag}" ]]; then
-    _fb="$(echo "${response}" | jq -j '
-      if .content then [.content[] | select(.type == "text") | .text] | join("")
-      elif .choices then (.choices[0].message.content // "")
-      else "" end' 2>/dev/null)" || true
-    [[ -n "${_fb}" ]] && printf '%s' "${_fb}" >&"${HARNESS_STREAM_FD}"
-  fi
   if ! echo "${response}" | jq '. + {next_state: "receive"}' 2>/dev/null; then
     echo "provider returned invalid JSON: ${response:0:200}" >&2
     jq -n --arg msg "provider returned invalid JSON" '{error: $msg}'

@@ -121,7 +121,7 @@ if [[ "${_stream}" == true ]]; then
       response.output_text.delta)
         delta="$(echo "${data}" | jq -j '.delta // empty'; printf x)"
         delta="${delta%x}"
-        [[ -n "${delta}" ]] && printf '%s' "${delta}" >&"${HARNESS_STREAM_FD}"
+        [[ -n "${delta}" && -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${delta}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
         ;;
       response.output_item.added)
         _item_type="$(echo "${data}" | jq -r '.item.type // empty')"
@@ -132,14 +132,15 @@ if [[ "${_stream}" == true ]]; then
         fi
         ;;
       response.function_call_arguments.done)
+        _oi="$(echo "${data}" | jq -r '.output_index')"
+        _args="$(echo "${data}" | jq -r '.arguments // "{}"')"
+        _parsed="$(echo "${_args}" | jq -c '.' 2>/dev/null || echo '{}')"
         if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
-          _oi="$(echo "${data}" | jq -r '.output_index')"
-          _args="$(echo "${data}" | jq -r '.arguments // "{}"')"
-          _parsed="$(echo "${_args}" | jq -c '.' 2>/dev/null || echo '{}')"
           jq -c -n --arg id "${_fc_ids[${_oi}]:-}" --arg name "${_fc_names[${_oi}]:-}" \
             --argjson input "${_parsed}" \
             '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
         fi
+        [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${_fc_ids[${_oi}]:-}" --arg name "${_fc_names[${_oi}]:-}" --argjson input "${_parsed}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
         ;;
       response.completed)
         response="$(echo "${data}" | jq -c '.response')"

@@ -14,7 +14,8 @@ case "${subcmd}" in
     ls -1t "${HARNESS_SESSIONS}" 2>/dev/null || echo "(no sessions)"
     ;;
   show)
-    id="${1:?usage: harness session show <id>}"
+    id="${1:-}"
+    [[ -n "${id}" ]] || _die "usage: harness session show <id>"
     dir="${HARNESS_SESSIONS}/${id}"
     [[ -d "${dir}" ]] || _die "session '${id}' not found"
     cat "${dir}/session.conf"

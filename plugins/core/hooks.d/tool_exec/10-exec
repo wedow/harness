@@ -48,28 +48,32 @@ else
   fi
 fi
 
-# Display tool execution to log
-{
-  printf '── %s ' "${tool_name}"
-  printf '─%.0s' $(seq 1 $(( 50 - ${#tool_name} )))
-  printf '\n'
+# Build display text for tool execution
+_display=""
+_display+="$(printf '── %s ' "${tool_name}")"
+_display+="$(printf '─%.0s' $(seq 1 $(( 50 - ${#tool_name} ))))"
+_display+=$'\n'
 
-  if [[ "${tool_name}" == "bash" ]]; then
-    echo "${input}" | jq -r '.command // empty' | sed 's/^/  /'
-  else
-    echo "${input}" | jq -r 'to_entries[] | "  \(.key)=\(.value)"'
-  fi
+if [[ "${tool_name}" == "bash" ]]; then
+  _display+="$(echo "${input}" | jq -r '.command // empty' | sed 's/^/  /')"
+else
+  _display+="$(echo "${input}" | jq -r 'to_entries[] | "  \(.key)=\(.value)"')"
+fi
+_display+=$'\n'
 
-  total_lines="$(printf '%s' "${result}" | wc -l)"
-  if (( total_lines > 30 )); then
-    printf '%s\n' "${result}" | head -30 | sed 's/^/  /'
-    printf '  ... (%d more lines)\n' $(( total_lines - 30 ))
-  else
-    printf '%s\n' "${result}" | sed 's/^/  /'
-  fi
+total_lines="$(printf '%s' "${result}" | wc -l)"
+if (( total_lines > 30 )); then
+  _display+="$(head -30 <<< "${result}" | sed 's/^/  /')"
+  _display+="$(printf '\n  ... (%d more lines)' $(( total_lines - 30 )))"
+else
+  _display+="$(sed 's/^/  /' <<< "${result}")"
+fi
 
-  [[ "${error}" == "true" ]] && echo "  (error)" || true
-} >> "${HARNESS_LOG}" 2>/dev/null || true
+[[ "${error}" == "true" ]] && _display+=$'\n  (error)'
+
+# Emit to stream for REPL display, and to log for non-REPL
+echo "${_display}" >> "${HARNESS_LOG}" 2>/dev/null || true
+[[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${_display}" '{type:"tool_output",text:$t}')" >> "${HARNESS_SESSION}/.stream" || true
 
 # Return result JSON with remaining tool calls
 jq -n \

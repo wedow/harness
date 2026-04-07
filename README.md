@@ -79,7 +79,7 @@ my-tool --exec      # execute: read JSON input from stdin, write result to stdou
 
 Write tools in any language. See `examples/tools/web_fetch` for a Python example.
 
-Built-in tools: `bash`, `read_file`, `write_file`, `str_replace`, `list_dir`, `agent`, `skill`.
+Built-in tools: `bash`, `read_file`, `write_file`, `str_replace`, `agent`, `skill`.
 
 ### Hooks
 

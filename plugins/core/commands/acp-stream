@@ -30,7 +30,7 @@ _acp_stream_loop() {
         local _tool_kind="other"
         case "$(echo "${_ev}" | jq -r '.name')" in
           bash) _tool_kind="execute" ;;
-          read_file|list_dir) _tool_kind="read" ;;
+          read_file) _tool_kind="read" ;;
           write_file|str_replace) _tool_kind="edit" ;;
         esac
         _rpc_notify "session/update" "$(echo "${_ev}" | jq -c --arg k "${_tool_kind}" '{

@@ -15,13 +15,13 @@ case "${1:-}" in
         "type": "string",
         "description": "Path to the file (absolute or relative to working directory)"
       },
-      "start_line": {
+      "offset": {
         "type": "integer",
-        "description": "First line to read (1-indexed, optional)"
+        "description": "Line number to start reading from (1-indexed, default: 1)"
       },
-      "end_line": {
+      "limit": {
         "type": "integer",
-        "description": "Last line to read (inclusive, optional)"
+        "description": "Maximum number of lines to read (default: entire file)"
       }
     },
     "required": ["path"]
@@ -35,8 +35,8 @@ JSON
   --exec)
     input="$(cat)"
     path="$(echo "${input}" | jq -r '.path')"
-    start_line="$(echo "${input}" | jq -r '.start_line // empty')"
-    end_line="$(echo "${input}" | jq -r '.end_line // empty')"
+    offset="$(echo "${input}" | jq -r '.offset // empty')"
+    limit="$(echo "${input}" | jq -r '.limit // empty')"
 
     # Resolve relative paths against working directory
     if [[ "${path}" != /* ]]; then
@@ -48,10 +48,19 @@ JSON
       exit 1
     fi
 
-    if [[ -n "${start_line}" && -n "${end_line}" ]]; then
-      sed -n "${start_line},${end_line}p" "${path}" | nl -ba -w4
-    elif [[ -n "${start_line}" ]]; then
-      tail -n "+${start_line}" "${path}" | nl -ba -w4 -v "${start_line}"
+    max_lines="${HARNESS_READ_LIMIT:-2000}"
+    total="$(wc -l < "${path}")"
+    start="${offset:-1}"
+
+    if [[ -z "${limit}" && -z "${offset}" ]] && (( total > max_lines )); then
+      echo "error: file has ${total} lines (limit: ${max_lines}). Use offset/limit to read a section, or use a subagent to search/summarize the full file."
+      exit 1
+    fi
+
+    if [[ -n "${limit}" ]]; then
+      sed -n "${start},$((start + limit - 1))p" "${path}" | nl -ba -w4 -v "${start}"
+    elif [[ -n "${offset}" ]]; then
+      tail -n "+${start}" "${path}" | nl -ba -w4 -v "${start}"
     else
       nl -ba -w4 "${path}"
     fi

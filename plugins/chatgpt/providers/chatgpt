@@ -112,7 +112,8 @@ fi
 if [[ "${_stream}" == true ]]; then
   # Streaming path: display text deltas in real-time, extract final response
   response=""
-  declare -A _fc_names=() _fc_ids=()
+  stream_text=""
+  declare -A _fc_names=() _fc_ids=() _fc_args=()
   while IFS= read -r line; do
     [[ "${line}" == data:* ]] || continue
     data="${line#data: }"
@@ -121,6 +122,7 @@ if [[ "${_stream}" == true ]]; then
       response.output_text.delta)
         delta="$(echo "${data}" | jq -j '.delta // empty'; printf x)"
         delta="${delta%x}"
+        stream_text+="${delta}"
         [[ -n "${delta}" && -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${delta}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
         ;;
       response.output_item.added)
@@ -134,6 +136,7 @@ if [[ "${_stream}" == true ]]; then
       response.function_call_arguments.done)
         _oi="$(echo "${data}" | jq -r '.output_index')"
         _args="$(echo "${data}" | jq -r '.arguments // "{}"')"
+        _fc_args["${_oi}"]="${_args}"
         _parsed="$(echo "${_args}" | jq -c '.' 2>/dev/null || echo '{}')"
         if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
           jq -c -n --arg id "${_fc_ids[${_oi}]:-}" --arg name "${_fc_names[${_oi}]:-}" \
@@ -157,6 +160,53 @@ if [[ "${_stream}" == true ]]; then
   if [[ -z "${response}" ]]; then
     echo "no response.completed event in stream" >&2
     exit 1
+  fi
+
+  stream_output="[]"
+  if [[ -n "${stream_text}" ]]; then
+    stream_output="$(printf '%s' "${stream_text}" | jq -Rs \
+      '[{type: "message", role: "assistant", content: [{type: "output_text", text: .}]}]')"
+  fi
+
+  if [[ ${#_fc_ids[@]} -gt 0 ]]; then
+    for _oi in $(echo "${!_fc_ids[@]}" | tr ' ' '\n' | sort -n); do
+      _stream_args="${_fc_args[${_oi}]:-}"
+      [[ -n "${_stream_args}" ]] || _stream_args='{}'
+      stream_output="$(echo "${stream_output}" | jq -c \
+        --arg id "${_fc_ids[${_oi}]}" \
+        --arg name "${_fc_names[${_oi}]}" \
+        --arg arguments "${_stream_args}" \
+        '. + [{type: "function_call", call_id: $id, name: $name, arguments: $arguments}]'
+      )"
+    done
+  fi
+
+  if [[ "$(echo "${stream_output}" | jq 'length')" -gt 0 ]]; then
+    response="$(printf '%s\n%s' "${response}" "${stream_output}" | jq -c -s '
+      .[0] as $response
+      | .[1] as $stream_output
+      | ($response.output // []) as $existing
+      | ($existing | map(select(.type == "function_call")) | map(.call_id)) as $existing_call_ids
+      | ($existing | map(.type == "message") | any) as $has_message
+      | ($stream_output
+          | map(
+              if .type == "message" then
+                select($has_message | not)
+              elif .type == "function_call" then
+                select((.call_id as $id | $existing_call_ids | index($id)) | not)
+              else
+                empty
+              end
+            )
+        ) as $missing
+      | if ($existing | length) == 0 then
+          $response + {output: $stream_output}
+        elif ($missing | length) > 0 then
+          $response + {output: ($existing + $missing)}
+        else
+          $response
+        end'
+    )"
   fi
 
   echo "${response}"

@@ -60,7 +60,21 @@ _render_stream() {
         _t="$(echo "${event}" | jq -j '.text'; printf x)"; printf '\033[2m%s\033[0m' "${_t%x}"
         last_type=thinking ;;
       tool_start)
-        printf '\n\033[90m[tool: %s]\033[0m ' "$(echo "${event}" | jq -r '.name')"
+        local _name _input _cmd
+        _name="$(echo "${event}" | jq -r '.name')"
+        _input="$(echo "${event}" | jq -r '.input // empty')"
+        printf '\n\033[90m[tool: %s]\033[0m' "${_name}"
+        # Show arguments immediately so user knows what's happening
+        if [[ "${_name}" == "bash" ]]; then
+          _cmd="$(echo "${_input}" | jq -r '.command // empty')"
+          [[ -n "${_cmd}" ]] && printf ' \033[2m%s\033[0m' "${_cmd}"
+        elif [[ -n "${_input}" && "${_input}" != "{}" && "${_input}" != "null" ]]; then
+          # Show key=value pairs for other tools (compact)
+          local _args
+          _args="$(echo "${_input}" | jq -r 'to_entries | map("\(.key)=\(.value | tostring)") | join(", ")')"
+          [[ -n "${_args}" && "${_args}" != "" ]] && printf ' \033[2m(%s)\033[0m' "${_args}"
+        fi
+        printf ' '
         last_type=tool_start ;;
       tool_done)
         if [[ "$(echo "${event}" | jq -r '.error')" == "true" ]]; then

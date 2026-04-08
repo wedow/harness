@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm base-devel bash curl git openssh jq pacman-contrib
+
+      - name: Create Release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65  # v2.6.2
+
+      - name: Get tarball SHA256
+        id: sha
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          for attempt in 1 2 3 4 5; do
+            curl -fsSL "https://github.com/${{ github.repository }}/archive/refs/tags/${VERSION}.tar.gz" -o release.tar.gz && break
+            echo "Tarball not ready, retrying in ${attempt}0s..."
+            sleep "${attempt}0"
+          done
+          [[ -f release.tar.gz ]] || { echo "Failed to download tarball after retries"; exit 1; }
+          SHA=$(sha256sum release.tar.gz | cut -d' ' -f1)
+          echo "sha256=$SHA" >> $GITHUB_OUTPUT
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Update Homebrew tap
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          chmod +x scripts/publish-homebrew.sh
+          ./scripts/publish-homebrew.sh "${{ steps.sha.outputs.version }}" "${{ steps.sha.outputs.sha256 }}"
+
+      - name: Update AUR package
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          chmod +x scripts/publish-aur.sh
+          ./scripts/publish-aur.sh "${{ steps.sha.outputs.version }}" "${{ steps.sha.outputs.sha256 }}"

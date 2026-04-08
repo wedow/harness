@@ -35,7 +35,7 @@ fi
 
 if [[ -z "${session_dir}" ]]; then
   session_dir="$(_new_session)"
-  echo "session: $(basename "${session_dir}")" >&2
+  echo "session: ${session_dir/#${HOME}/\~}" >&2
   [[ -n "${HARNESS_PROVIDER}" ]] && echo "provider: ${HARNESS_PROVIDER}" >&2
   [[ -n "${HARNESS_MODEL}" ]] && echo "model: ${HARNESS_MODEL}" >&2
 fi

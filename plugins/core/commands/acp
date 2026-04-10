@@ -7,6 +7,13 @@ case "${1:-}" in --describe) echo "ACP JSON-RPC stdio adapter"; exit 0 ;; esac
 source "${HARNESS_ROOT}/bin/harness"
 source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
 
+# portable setsid: macOS lacks GNU setsid
+_setsid() {
+  if command -v setsid &>/dev/null; then setsid "$@"
+  else perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' "$@"
+  fi
+}
+
 # --- JSON-RPC helpers ---
 
 _rpc_result() {
@@ -79,7 +86,7 @@ while IFS= read -r line; do
       _pidfile="${_sdir}/.pid"
       rm -f "${_pidfile}"
       export SESSION_DIR="${_sdir}"
-      setsid bash -c "
+      _setsid bash -c "
         echo \$\$ > \"${_pidfile}\"
         source \"${HARNESS_ROOT}/bin/harness\"
         _refresh_sources

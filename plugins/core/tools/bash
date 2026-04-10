@@ -36,7 +36,16 @@ JSON
     cwd="${HARNESS_CWD:-${PWD}}"
     cd "${cwd}" 2>/dev/null || true
     # Execute with a timeout, capture both stdout and stderr
-    timeout "${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}" bash -c "${command}" 2>&1 || true
+    _timeout="${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}"
+    if command -v timeout &>/dev/null; then
+      timeout "${_timeout}" bash -c "${command}" 2>&1 || true
+    else
+      # macOS: background + watchdog kill (no GNU timeout)
+      bash -c "${command}" 2>&1 & _pid=$!
+      ( sleep "${_timeout}" && kill "${_pid}" 2>/dev/null ) & _wd=$!
+      wait "${_pid}" 2>/dev/null || true
+      kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
+    fi
     ;;
   *)
     echo "usage: bash --schema | --describe | --exec" >&2

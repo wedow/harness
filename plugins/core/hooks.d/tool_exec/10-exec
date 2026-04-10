@@ -61,7 +61,7 @@ else
 fi
 _display+=$'\n'
 
-total_lines="$(printf '%s' "${result}" | wc -l)"
+total_lines="$(printf '%s' "${result}" | wc -l | tr -d ' ')"
 if (( total_lines > 30 )); then
   _display+="$(head -30 <<< "${result}" | sed 's/^/  /')"
   _display+="$(printf '\n  ... (%d more lines)' $(( total_lines - 30 )))"

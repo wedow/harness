@@ -31,7 +31,7 @@ done < <(
       cur="$(dirname "${cur}")"
     done
     (( seen_home )) || echo "${HARNESS_HOME}"
-  } | tac
+  } | awk '{a[NR]=$0} END{for(i=NR;i>=1;i--)print a[i]}'
 )
 
 # Output as JSON

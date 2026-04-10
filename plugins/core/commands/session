@@ -19,7 +19,7 @@ case "${subcmd}" in
     dir="${HARNESS_SESSIONS}/${id}"
     [[ -d "${dir}" ]] || _die "session '${id}' not found"
     cat "${dir}/session.conf"
-    echo "messages=$(ls -1 "${dir}/messages/" | wc -l)"
+    echo "messages=$(ls -1 "${dir}/messages/" | wc -l | tr -d ' ')"
     ls -1 "${dir}/messages/"
     ;;
   dir)

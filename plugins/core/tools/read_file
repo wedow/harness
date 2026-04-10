@@ -49,7 +49,7 @@ JSON
     fi
 
     max_lines="${HARNESS_READ_LIMIT:-2000}"
-    total="$(wc -l < "${path}")"
+    total="$(wc -l < "${path}" | tr -d ' ')"
     start="${offset:-1}"
 
     if [[ -z "${limit}" && -z "${offset}" ]] && (( total > max_lines )); then

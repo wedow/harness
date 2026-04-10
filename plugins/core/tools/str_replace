@@ -53,7 +53,7 @@ JSON
     fi
 
     # Count occurrences (grep -c counts lines, not matches; use grep -oF | wc -l)
-    count="$(grep -oF "${old_str}" "${path}" 2>/dev/null | wc -l)" || count=0
+    count="$(grep -oF "${old_str}" "${path}" 2>/dev/null | wc -l | tr -d ' ')" || count=0
     if (( count == 0 )); then
       echo "error: old_str not found in ${path}"
       exit 1

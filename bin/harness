@@ -1,5 +1,15 @@
 #!/usr/bin/env bash
 # harness — minimal agent loop. everything else is plugins.
+
+# bash 4+ required (associative arrays, mapfile). Re-exec with a newer bash if needed.
+if (( BASH_VERSINFO[0] < 4 )); then
+  for _bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
+    [[ -x "$_bash" ]] && exec "$_bash" "$0" "$@"
+  done
+  echo "harness: bash 4+ required (found ${BASH_VERSION}). Install: brew install bash" >&2
+  exit 1
+fi
+
 set -euo pipefail
 
 HARNESS_VERSION="0.1.0"

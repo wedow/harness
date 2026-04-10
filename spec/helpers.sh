@@ -14,7 +14,7 @@ setup() {
 }
 
 teardown() {
-  [[ -n "${_tmpdir}" && "${_tmpdir}" == /tmp/* ]] && rm -rf "${_tmpdir}"
+  [[ -n "${_tmpdir}" && -d "${_tmpdir}" ]] && rm -rf "${_tmpdir}"
 }
 trap teardown EXIT
 
@@ -49,6 +49,19 @@ assert_file_exists() {
 
 assert_file_contains() {
   grep -qF "$2" "$1" || { echo "FAIL: '$2' not found in $1"; return 1; }
+}
+
+# portable timeout: uses GNU timeout if available, else background+kill
+run_with_timeout() {
+  local secs="$1"; shift
+  if command -v timeout &>/dev/null; then
+    timeout "${secs}" "$@" || true
+  else
+    "$@" & local _pid=$!
+    ( sleep "${secs}" && kill "${_pid}" 2>/dev/null ) & local _wd=$!
+    wait "${_pid}" 2>/dev/null || true
+    kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
+  fi
 }
 
 # make_sources DIR — create a minimal source dir and export HARNESS_SOURCES

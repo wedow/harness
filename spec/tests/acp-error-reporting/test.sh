@@ -31,7 +31,7 @@ acp="${HARNESS_ROOT}/plugins/core/commands/acp"
 # Send session/prompt with the pre-created session ID.
 # The agent will hit the failing start hook, produce an error event, then done.
 out="$(printf '{"jsonrpc":"2.0","id":1,"method":"session/prompt","params":{"sessionId":"%s","prompt":[{"text":"hello"}]}}\n' \
-  "${sid}" | timeout 15 "$acp" 2>/dev/null)" || true
+  "${sid}" | run_with_timeout 15 "$acp" 2>/dev/null)" || true
 
 # Find the response with id:1 (skip any notification lines)
 prompt_response=""

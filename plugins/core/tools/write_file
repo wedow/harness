@@ -41,7 +41,7 @@ JSON
 
     mkdir -p "$(dirname "${path}")"
     printf '%s' "${content}" > "${path}"
-    echo "wrote $(wc -c < "${path}") bytes to ${path}"
+    echo "wrote $(wc -c < "${path}" | tr -d ' ') bytes to ${path}"
     ;;
   *)
     echo "usage: write_file --schema | --describe | --exec" >&2

@@ -6,13 +6,24 @@ The core script handles plugin discovery, hook dispatch, and the agentic loop. T
 
 ## Install
 
+**Homebrew (macOS/Linux):**
 ```bash
-git clone <repo-url> ~/src/harness
-ln -s ~/src/harness/bin/harness ~/.local/bin/harness
-ln -s ~/src/harness/bin/harness ~/.local/bin/hs  # alias
-
-# Dependencies: bash 4+, jq, curl
+brew install wedow/tools/harness
 ```
+
+**Arch Linux (AUR):**
+```bash
+yay -S harness  # or paru, etc.
+```
+
+**From source (auto-updates on git pull):**
+```bash
+git clone https://github.com/wedow/harness.git
+cd harness && ln -s "$PWD/bin/harness" ~/.local/bin/harness
+ln -s "$PWD/bin/harness" ~/.local/bin/hs  # alias
+```
+
+Dependencies: bash 4+, jq, curl
 
 ## Quick start
 

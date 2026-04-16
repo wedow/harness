@@ -57,14 +57,21 @@ JSON
       [[ -d "${_src}/skills" ]] && search_dirs+=("${_src}/skills")
     done
 
-    # Find skill (most-local wins = first match)
+    # Find skill: match by SKILL.md frontmatter `name:` (the same identifier
+    # the catalog publishes in <available-skills>). Directory name is irrelevant
+    # for resolution — a skill at skills/anything/SKILL.md with `name: foo` is
+    # loadable as `foo`. Most-local wins = first match.
     skillmd=""
     for sdir in "${search_dirs[@]}"; do
-      candidate="${sdir}/${skill_name}/SKILL.md"
-      if [[ -f "${candidate}" ]]; then
-        skillmd="${candidate}"
-        break
-      fi
+      for candidate_dir in "${sdir}"/*/; do
+        candidate_md="${candidate_dir}SKILL.md"
+        [[ -f "${candidate_md}" ]] || continue
+        fm_name="$(awk '/^---$/{n++; next} n==1 && /^name:[[:space:]]*/{sub(/^name:[[:space:]]*/, ""); print; exit}' "${candidate_md}")"
+        if [[ "${fm_name}" == "${skill_name}" ]]; then
+          skillmd="${candidate_md}"
+          break 2
+        fi
+      done
     done
 
     if [[ -z "${skillmd}" ]]; then

@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# 25-skills — discover skills and inject catalog into the system prompt.
+# 35-skills — discover skills and inject catalog into the system prompt.
+# Runs AFTER 30-prompts so the catalog is appended to a fully-built system
+# prompt rather than getting clobbered by 30-prompts replacing the field.
 #
 # Walks CWD upward (like source discovery) collecting skills from:
 #   <dir>/.harness/skills/    (harness-native)
@@ -13,6 +15,18 @@ payload="$(cat)"
 
 # Collect skill directories: CWD upward, global first (lowest priority)
 skill_dirs=()
+
+# Bundled plugin skills (lowest priority — added first so any local override wins).
+# Iterates HARNESS_SOURCES looking for skills/ in plugin source dirs (e.g.
+# plugins/core/skills/). Skips .harness/ dirs themselves; those are handled
+# by the CWD-walk below.
+IFS=':' read -ra _src_arr <<< "${HARNESS_SOURCES:-}"
+for _src in "${_src_arr[@]}"; do
+  case "${_src}" in */.harness) continue ;; esac
+  [[ "${_src}" == "${HARNESS_HOME:-}" ]] && continue
+  [[ -d "${_src}/skills" ]] && skill_dirs+=("${_src}/skills")
+done
+
 walk_dirs=()
 cur="${HARNESS_CWD:-${PWD}}"
 while true; do
@@ -71,8 +85,7 @@ for name in $(printf '%s\n' "${!skill_names[@]}" | sort); do
 done
 catalog+=$'\n'"</available-skills>"
 
-instructions="The following skills provide specialized instructions for specific tasks.
-When a task matches a skill's description, call the skill tool with the skill's name to load its full instructions."
+instructions="The skills below are authoritative guides for specific task types. BEFORE doing anything else on a user request, scan these descriptions; if any matches the request, call the \`skill\` tool with that name FIRST to load its full instructions, and follow them. Do not improvise or explore the codebase to figure out something a skill already covers."
 
 block="${instructions}"$'\n\n'"${catalog}"
 

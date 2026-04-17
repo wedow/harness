@@ -47,6 +47,16 @@ JSON
       [[ -d "${HOME}/.agents/skills" ]]  && search_dirs+=("${HOME}/.agents/skills")
     fi
 
+    # Bundled plugin skills (lowest priority — appended last so local wins).
+    # Iterates HARNESS_SOURCES for skills/ in plugin source dirs; skips .harness/
+    # dirs (already covered by the walk above).
+    IFS=':' read -ra _src_arr <<< "${HARNESS_SOURCES:-}"
+    for _src in "${_src_arr[@]}"; do
+      case "${_src}" in */.harness) continue ;; esac
+      [[ "${_src}" == "${HOME}/.harness" ]] && continue
+      [[ -d "${_src}/skills" ]] && search_dirs+=("${_src}/skills")
+    done
+
     # Find skill (most-local wins = first match)
     skillmd=""
     for sdir in "${search_dirs[@]}"; do

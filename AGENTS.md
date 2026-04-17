@@ -104,7 +104,7 @@ Sessions live in `<sessions-dir>/<id>/messages/` as numbered markdown files with
 - `plugins/chatgpt/hooks.d/` — ChatGPT-specific hooks (assemble/messages, receive/save, auth-set/oauth)
 - `plugins/core/tools/` — five built-in tools
 - `plugins/subagents/` — `agent` tool + prompt fragment for spawning child sessions
-- `plugins/skills/` — `skill` tool + `25-skills` assemble hook for skill discovery
+- `plugins/skills/` — `skill` tool + `35-skills` assemble hook for skill discovery
 
 ## Conventions
 

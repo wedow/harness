@@ -201,7 +201,7 @@ See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plug
 
 System prompts follow the [agents.md](https://agents.md) standard: place an `AGENTS.md` file at the root of any directory with a `.harness/` config. For composable prompt fragments, use `prompts/*.md` inside `.harness/`.
 
-Skills are directories containing a `SKILL.md` with YAML frontmatter (`name`, `description`). Place them in `.harness/skills/` or `.agents/skills/` at any level. The `25-skills` assemble hook discovers them and injects a catalog into the system prompt; the `skill` tool loads full instructions on demand.
+Skills are directories containing a `SKILL.md` with YAML frontmatter (`name`, `description`). Place them in `.harness/skills/` or `.agents/skills/` at any level, or bundle them with a plugin via `plugins/<name>/skills/`. The `35-skills` assemble hook discovers them and injects a catalog into the system prompt; the `skill` tool loads full instructions on demand. The bundled `extend-harness` skill teaches agents how to write new tools, hooks, providers, and skills at runtime.
 
 When multiple `.harness/` directories exist in the path from CWD to `$HOME`, they all contribute. For hooks and tools with the same basename, the most-local one wins. For prompt content, everything is concatenated (global first, local last, so local instructions can refine global ones).
 

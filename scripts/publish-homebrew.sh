@@ -55,8 +55,9 @@ class ${CLASS_NAME} < Formula
   license "MIT"
 
   depends_on "bash"
-  depends_on "curl"
+  uses_from_macos "curl"
   depends_on "jq"
+  uses_from_macos "perl"
 
   def install
     bin.install "bin/harness"

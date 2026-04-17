@@ -6,7 +6,7 @@ pkgdesc="Minimal agent loop in bash"
 arch=('any')
 url="https://github.com/wedow/harness"
 license=('MIT')
-depends=('bash' 'curl' 'jq')
+depends=('bash' 'curl' 'jq' 'perl')
 source=("harness-$pkgver.tar.gz::https://github.com/wedow/harness/archive/refs/tags/v$pkgver.tar.gz")
 # sha256sums patched at publish time by publish-aur.sh
 sha256sums=('SKIP')

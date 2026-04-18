@@ -23,4 +23,8 @@ package() {
     sed 's|^readonly HARNESS_ROOT=.*$|readonly HARNESS_ROOT="/usr/lib/harness"|' bin/harness > "$pkgdir/usr/bin/harness"
     chmod 755 "$pkgdir/usr/bin/harness"
     ln -s /usr/bin/harness "$pkgdir/usr/bin/hs"
+
+    # plugins source ${HARNESS_ROOT}/bin/harness
+    install -d "$pkgdir/usr/lib/harness/bin"
+    ln -s /usr/bin/harness "$pkgdir/usr/lib/harness/bin/harness"
 }

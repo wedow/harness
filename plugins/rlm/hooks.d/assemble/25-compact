@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # 25-compact — truncate large content in older messages, leave breadcrumbs.
+# Two thresholds:
+#   RLM_COMPACT_TOTAL   (default 200000 chars) — skip compaction entirely if
+#                        total message content is under this
+#   RLM_COMPACT_MESSAGE (default 8000 chars)   — per-message truncation size
+#                        for messages in the compaction window
 # Handles Anthropic, OpenAI, and ChatGPT message formats.
 set -euo pipefail
 
@@ -8,47 +13,64 @@ payload="$(cat)"
 has_messages="$(echo "${payload}" | jq 'has("messages") and (.messages | length) > 0')"
 [[ "${has_messages}" == "true" ]] || { echo "${payload}"; exit 0; }
 
-threshold="${RLM_COMPACT_THRESHOLD:-2000}"
+total_threshold="${RLM_COMPACT_TOTAL:-200000}"
+msg_threshold="${RLM_COMPACT_MESSAGE:-8000}"
 keep="${RLM_KEEP_RECENT:-6}"
 session="${HARNESS_SESSION:-}"
 
 echo "${payload}" | jq \
-  --argjson thresh "${threshold}" \
+  --argjson total_thresh "${total_threshold}" \
+  --argjson msg_thresh "${msg_threshold}" \
   --argjson keep "${keep}" \
   --arg session "${session}" '
 
-def trunc:
-  if type == "string" and length > $thresh then
-    .[:($thresh / 2 | floor)] +
-    "\n\n<!-- truncated (" + (length | tostring) +
-    " chars). Full session history: " + $session + "/messages/ -->"
-  else . end;
+# Estimate total content size across all messages
+def content_size:
+  if type == "string" then length
+  elif type == "array" then map(
+    (.content // .text // .output // "" | if type == "string" then length else 0 end)
+  ) | add // 0
+  else 0 end;
 
-.messages |= (
-  (length - $keep) as $cutoff |
-  [range(length) as $i | .[$i] |
-    if $i >= ([0, $cutoff] | max) then .
-    else
-      # Anthropic: content array with tool_result / text blocks
-      if (.content | type) == "array" then
-        .content |= map(
-          if .type == "tool_result" and (.content | type) == "string" then
-            .content |= trunc
-          elif .type == "text" and (.text | type) == "string" then
-            .text |= trunc
-          else . end
-        )
-      # OpenAI: role=tool
-      elif .role == "tool" and (.content | type) == "string" then
-        .content |= trunc
-      # ChatGPT: function_call_output
-      elif .type == "function_call_output" and (.output | type) == "string" then
-        .output |= trunc
-      # Any message with large string content
-      elif (.content | type) == "string" then
-        .content |= trunc
-      else . end
-    end
-  ]
-)
+def total_size:
+  [.[] | (.content // .output // "" | content_size)] | add // 0;
+
+# Only compact if total content exceeds threshold
+if (.messages | total_size) < $total_thresh then .
+else
+  def trunc:
+    if type == "string" and length > $msg_thresh then
+      .[:($msg_thresh / 2 | floor)] +
+      "\n\n<!-- truncated (" + (length | tostring) +
+      " chars). Full session history: " + $session + "/messages/ -->"
+    else . end;
+
+  .messages |= (
+    (length - $keep) as $cutoff |
+    [range(length) as $i | .[$i] |
+      if $i >= ([0, $cutoff] | max) then .
+      else
+        # Anthropic: content array with tool_result / text blocks
+        if (.content | type) == "array" then
+          .content |= map(
+            if .type == "tool_result" and (.content | type) == "string" then
+              .content |= trunc
+            elif .type == "text" and (.text | type) == "string" then
+              .text |= trunc
+            else . end
+          )
+        # OpenAI: role=tool
+        elif .role == "tool" and (.content | type) == "string" then
+          .content |= trunc
+        # ChatGPT: function_call_output
+        elif .type == "function_call_output" and (.output | type) == "string" then
+          .output |= trunc
+        # Any message with large string content
+        elif (.content | type) == "string" then
+          .content |= trunc
+        else . end
+      end
+    ]
+  )
+end
 '

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# 05-notes — create session scratch space for working notes.
+set -euo pipefail
+input="$(cat)"
+[[ -n "${HARNESS_SESSION:-}" ]] && mkdir -p "${HARNESS_SESSION}/notes"
+echo "${input}"

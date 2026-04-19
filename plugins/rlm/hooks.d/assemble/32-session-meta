@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# 32-session-meta — append session paths and notes listing to system prompt.
+set -euo pipefail
+
+payload="$(cat)"
+session="${HARNESS_SESSION:-}"
+[[ -n "${session}" ]] || { echo "${payload}"; exit 0; }
+
+meta="
+
+## Session
+- Session: ${session}
+- Messages: ${session}/messages/
+- Notes: ${session}/notes/"
+
+if [[ -d "${session}/notes" ]]; then
+  for f in "${session}/notes/"*; do
+    [[ -f "${f}" ]] || continue
+    meta+=$'\n'"  - $(basename "${f}")"
+  done
+fi
+
+echo "${payload}" | jq --arg meta "${meta}" '.system += $meta'

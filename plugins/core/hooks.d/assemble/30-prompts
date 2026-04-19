@@ -19,12 +19,12 @@ IFS=':' read -ra sources <<< "${HARNESS_SOURCES}"
 for src in "${sources[@]}"; do
   # AGENTS.md at the parent of this source (agents.md standard location)
   parent="$(dirname "${src}")"
-  [[ -f "${parent}/AGENTS.md" ]] && system_parts+=("$(cat "${parent}/AGENTS.md")")
+  [[ -f "${parent}/AGENTS.md" ]] && system_parts+=("<!-- source: ${parent}/AGENTS.md -->"$'\n'"$(cat "${parent}/AGENTS.md")")
 
   # All .md files in prompts/ sorted (harness-specific composability)
   if [[ -d "${src}/prompts" ]]; then
     for f in $(ls -1 "${src}/prompts/"*.md 2>/dev/null | sort); do
-      system_parts+=("$(cat "${f}")")
+      system_parts+=("<!-- source: ${f} -->"$'\n'"$(cat "${f}")")
     done
   fi
 done

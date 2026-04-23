@@ -15,6 +15,12 @@ and this project adheres to Semantic Versioning.
 
 ### Removed
 
+## [0.1.2] - 2026-04-23
+
+### Fixed
+- Fixed OpenAI and ChatGPT assemble hooks so embedded `---` blocks inside tool results are preserved as message content instead of being reparsed as frontmatter.
+- Fixed AUR release publishing in root-run CI environments so `.SRCINFO` is generated from the package directory before push.
+
 ## [0.1.1] - 2026-04-23
 
 ### Added

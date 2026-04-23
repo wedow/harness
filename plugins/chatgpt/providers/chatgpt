@@ -142,9 +142,13 @@ if [[ "${_stream}" == true ]]; then
   # Streaming path: display text deltas in real-time, extract final response
   response=""
   stream_text=""
+  non_sse_body=""
   declare -A _fc_names=() _fc_ids=() _fc_args=()
-  while IFS= read -r line; do
-    [[ "${line}" == data:* ]] || continue
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ "${line}" != data:* ]]; then
+      [[ -n "${line}" ]] && non_sse_body+="${line}"$'\n'
+      continue
+    fi
     data="${line#data: }"
     type="$(echo "${data}" | jq -r '.type // empty' 2>/dev/null)" || continue
     case "${type}" in
@@ -187,7 +191,15 @@ if [[ "${_stream}" == true ]]; then
   )
 
   if [[ -z "${response}" ]]; then
-    echo "no response.completed event in stream" >&2
+    err_msg="$(printf '%s' "${non_sse_body}" | jq -r '.error.message // .detail // empty' 2>/dev/null)"
+    if [[ -n "${err_msg}" ]]; then
+      err_resets="$(printf '%s' "${non_sse_body}" | jq -r '.error.resets_in_seconds // empty' 2>/dev/null)"
+      [[ -n "${err_resets}" ]] && err_msg+=" (resets in ${err_resets}s)"
+      echo "chatgpt API error: ${err_msg}" >&2
+    else
+      echo "no response.completed event in stream" >&2
+      [[ -n "${non_sse_body}" ]] && { _bd="${non_sse_body%$'\n'}"; echo "body: ${_bd:0:500}" >&2; }
+    fi
     exit 1
   fi
 

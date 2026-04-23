@@ -84,14 +84,18 @@ if [[ "${streaming}" == true ]]; then
   # Accumulators
   resp_id="" resp_model="" text_content="" finish_reason=""
   prompt_tokens=0 completion_tokens=0 total_tokens=0
+  non_sse_body=""
   declare -A tc_ids=() tc_names=() tc_args=()
 
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "${line}" ]]; do
     # Strip trailing carriage return
     line="${line%$'\r'}"
 
     # Skip empty lines and non-data lines
-    [[ "${line}" != data:* ]] && continue
+    if [[ "${line}" != data:* ]]; then
+      [[ -n "${line}" ]] && non_sse_body+="${line}"$'\n'
+      continue
+    fi
     data="${line#data: }"
     [[ "${data}" == "[DONE]" ]] && break
 
@@ -168,6 +172,14 @@ if [[ "${streaming}" == true ]]; then
         '.[0] + [{id: $id, type: "function", function: {name: $name, arguments: .[1]}}]'
       )"
     done
+  fi
+
+  if [[ -z "${resp_id}" && -z "${text_content}" && ${#tc_ids[@]} -eq 0 && -n "${non_sse_body}" ]]; then
+    err_msg="$(printf '%s' "${non_sse_body}" | jq -r '.error.message? // (.error | strings) // .detail // empty' 2>/dev/null)"
+    if [[ -n "${err_msg}" ]]; then
+      echo "openai API error: ${err_msg}" >&2
+      exit 1
+    fi
   fi
 
   # Reconstruct complete response

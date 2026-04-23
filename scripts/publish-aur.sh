@@ -57,6 +57,8 @@ push_to_aur() {
         git -C "$AUR_DIR" remote add origin "ssh://aur@aur.archlinux.org/$PKGNAME.git"
     fi
 
+    git config --global --add safe.directory "$AUR_DIR"
+
     cp "$REPO_ROOT/pkg/aur/$PKGNAME/PKGBUILD" "$AUR_DIR/"
     update_pkgbuild "$AUR_DIR/PKGBUILD"
     generate_srcinfo "$AUR_DIR"

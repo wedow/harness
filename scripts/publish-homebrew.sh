@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 # Publish harness formula to Homebrew tap
 # Usage: ./scripts/publish-homebrew.sh <version> <sha256>
-# Requires: TAP_GITHUB_TOKEN environment variable
+# Requires: TAP_GITHUB_TOKEN environment variable for the default GitHub remote
 
 set -euo pipefail
 
 (( $# >= 2 )) || { echo "Usage: $0 <version> <sha256>"; exit 1; }
-[[ -n "${TAP_GITHUB_TOKEN:-}" ]] || { echo "TAP_GITHUB_TOKEN not set"; exit 1; }
 
 VERSION="${1#v}"
 SHA256="$2"
-TAP_REPO="wedow/homebrew-tools"
+TAP_REPO="${TAP_REPO:-wedow/homebrew-tools}"
+TAP_REPO_URL="${TAP_REPO_URL:-https://github.com/${TAP_REPO}.git}"
 FORMULA_NAME="harness"
 CLASS_NAME="Harness"
 REPO_SLUG="wedow/harness"
@@ -35,15 +35,22 @@ TOKEN_FILE="$(mktemp)"
 ASKPASS="$(mktemp)"
 trap 'rm -rf "$TAP_DIR" "$TOKEN_FILE" "$ASKPASS"' EXIT
 
+tap_requires_auth() {
+    [[ "$TAP_REPO_URL" =~ ^https://github.com/ ]]
+}
+
 main() {
     echo "Publishing ${FORMULA_NAME} to Homebrew tap (v$VERSION)"
 
-    (umask 077; printf '%s\n' "${TAP_GITHUB_TOKEN}" > "$TOKEN_FILE")
-    printf '#!/bin/sh\ncat "%s"\n' "$TOKEN_FILE" > "$ASKPASS"
-    chmod 700 "$ASKPASS"
-    export GIT_ASKPASS="$ASKPASS"
+    if tap_requires_auth; then
+        [[ -n "${TAP_GITHUB_TOKEN:-}" ]] || { echo "TAP_GITHUB_TOKEN not set"; exit 1; }
+        (umask 077; printf '%s\n' "${TAP_GITHUB_TOKEN}" > "$TOKEN_FILE")
+        printf '#!/bin/sh\ncat "%s"\n' "$TOKEN_FILE" > "$ASKPASS"
+        chmod 700 "$ASKPASS"
+        export GIT_ASKPASS="$ASKPASS"
+    fi
 
-    git clone "https://github.com/${TAP_REPO}.git" "$TAP_DIR"
+    git clone "$TAP_REPO_URL" "$TAP_DIR"
 
     mkdir -p "$TAP_DIR/Formula"
     cat > "$TAP_DIR/Formula/${FORMULA_NAME}.rb" <<EOF

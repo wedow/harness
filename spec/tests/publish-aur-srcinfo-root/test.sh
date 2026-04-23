@@ -23,6 +23,18 @@ exit 0
 SH
 chmod +x "$test_dir/chown"
 
+cat > "$test_dir/runuser" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+[ "${1:-}" = "-u" ] || exit 2
+shift 2
+if [ "${1:-}" = "--" ]; then
+  shift
+fi
+exec "$@"
+SH
+chmod +x "$test_dir/runuser"
+
 cat > "$test_dir/su" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail

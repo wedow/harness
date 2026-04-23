@@ -1,0 +1,118 @@
+name: Release Rehearsal
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Rehearsal version to inject into package metadata
+        required: false
+        default: v0.0.0
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/release-rehearsal.yml
+      - pkg/aur/harness/PKGBUILD
+      - scripts/publish-aur.sh
+      - scripts/publish-homebrew.sh
+      - scripts/release-manifest.sh
+  push:
+    branches:
+      - master
+    paths:
+      - .github/workflows/release.yml
+      - .github/workflows/release-rehearsal.yml
+      - pkg/aur/harness/PKGBUILD
+      - scripts/publish-aur.sh
+      - scripts/publish-homebrew.sh
+      - scripts/release-manifest.sh
+
+jobs:
+  rehearse:
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: pacman -Syu --noconfirm base-devel bash curl git openssh jq pacman-contrib
+
+      - name: Set rehearsal values
+        id: vars
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="${{ inputs.version }}"
+          else
+            version="v0.0.0"
+          fi
+
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "Invalid rehearsal version: $version"
+            exit 1
+          }
+
+          tar -czf release.tar.gz .
+          sha256="$(sha256sum release.tar.gz | cut -d' ' -f1)"
+
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha256=$sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Seed rehearsal remotes
+        shell: bash
+        run: |
+          git clone --bare https://github.com/wedow/homebrew-tools.git /tmp/homebrew-tools.git
+          git clone --bare https://aur.archlinux.org/harness.git /tmp/harness-aur.git
+
+      - name: Rehearse Homebrew publish
+        env:
+          TAP_REPO_URL: /tmp/homebrew-tools.git
+        run: |
+          chmod +x scripts/publish-homebrew.sh
+          ./scripts/publish-homebrew.sh "${{ steps.vars.outputs.version }}" "${{ steps.vars.outputs.sha256 }}"
+
+      - name: Rehearse AUR publish
+        env:
+          AUR_REMOTE_URL: /tmp/harness-aur.git
+        run: |
+          chmod +x scripts/publish-aur.sh
+          ./scripts/publish-aur.sh "${{ steps.vars.outputs.version }}" "${{ steps.vars.outputs.sha256 }}"
+
+      - name: Validate rehearsal outputs
+        shell: bash
+        run: |
+          version="${{ steps.vars.outputs.version }}"
+          version_number="${version#v}"
+          sha256="${{ steps.vars.outputs.sha256 }}"
+          homebrew_checkout="$(mktemp -d)"
+          aur_checkout="$(mktemp -d)"
+          trap 'rm -rf "$homebrew_checkout" "$aur_checkout"' EXIT
+
+          git clone /tmp/homebrew-tools.git "$homebrew_checkout"
+          git clone /tmp/harness-aur.git "$aur_checkout"
+
+          formula="$homebrew_checkout/Formula/harness.rb"
+
+          grep -q "url \"https://github.com/wedow/harness/archive/refs/tags/v${version_number}.tar.gz\"" "$formula"
+          grep -q "sha256 \"${sha256}\"" "$formula"
+          grep -q "^pkgver=${version_number}$" "$aur_checkout/PKGBUILD"
+          grep -q '^pkgbase = harness$' "$aur_checkout/.SRCINFO"
+          grep -q "pkgver = ${version_number}" "$aur_checkout/.SRCINFO"
+          grep -q "sha256sums = ${sha256}" "$aur_checkout/.SRCINFO"
+
+          {
+            echo "## Release rehearsal"
+            echo
+            echo "- Version: \`${version}\`"
+            echo "- SHA256: \`${sha256}\`"
+            echo
+            echo "### Homebrew commit"
+            echo '```text'
+            git --git-dir=/tmp/homebrew-tools.git log -1 --stat --format=medium
+            echo '```'
+            echo
+            echo "### AUR commit"
+            echo '```text'
+            git --git-dir=/tmp/harness-aur.git log -1 --stat --format=medium
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

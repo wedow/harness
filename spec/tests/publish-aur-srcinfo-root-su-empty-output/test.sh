@@ -38,16 +38,7 @@ chmod +x "$test_dir/runuser"
 cat > "$test_dir/su" <<'SH'
 #!/usr/bin/env bash
 set -euo pipefail
-user="$1"
-shift
-shell=/bin/sh
-if [ "${1:-}" = "-s" ]; then
-  shell="$2"
-  shift 2
-fi
-[ "${1:-}" = "-c" ] || exit 2
-cmd="$2"
-exec "$shell" -c "$cmd"
+exit 0
 SH
 chmod +x "$test_dir/su"
 

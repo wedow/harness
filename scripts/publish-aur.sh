@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # Publish harness package to AUR
 # Usage: ./scripts/publish-aur.sh <version> <sha256>
-# Requires: AUR_SSH_KEY environment variable
+# Requires: AUR_SSH_KEY environment variable for the default AUR SSH remote
 
 set -euo pipefail
 
 (( $# >= 2 )) || { echo "Usage: $0 <version> <sha256>"; exit 1; }
-[[ -n "${AUR_SSH_KEY:-}" ]] || { echo "AUR_SSH_KEY not set"; exit 1; }
-
 VERSION="${1#v}"
 SHA256="$2"
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PKGNAME="harness"
+AUR_REMOTE_URL="${AUR_REMOTE_URL:-ssh://aur@aur.archlinux.org/$PKGNAME.git}"
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version: $VERSION"; exit 1; }
 [[ "$SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid sha256: $SHA256"; exit 1; }
 
 setup_ssh() {
+    if [[ "$AUR_REMOTE_URL" != ssh://aur@aur.archlinux.org/* ]]; then
+        return 0
+    fi
+    [[ -n "${AUR_SSH_KEY:-}" ]] || { echo "AUR_SSH_KEY not set"; exit 1; }
     mkdir -p ~/.ssh
     (umask 077; printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur)
     export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o StrictHostKeyChecking=accept-new"
@@ -30,7 +33,7 @@ generate_srcinfo() {
         id _build &>/dev/null || useradd -m _build
         chown -R _build: "$pkg_dir"
         pkg_dir_quoted="${pkg_dir//\'/\'\\\'\'}"
-        srcinfo="$(su _build -s /bin/sh -c "cd '$pkg_dir_quoted' && makepkg --printsrcinfo")"
+        srcinfo="$(runuser -u _build -- sh -lc "cd '$pkg_dir_quoted' && makepkg --printsrcinfo")"
     else
         srcinfo="$(cd "$pkg_dir" && makepkg --printsrcinfo)"
     fi
@@ -55,12 +58,12 @@ push_to_aur() {
 
     echo "Publishing $PKGNAME to AUR..."
 
-    if ! git clone "ssh://aur@aur.archlinux.org/$PKGNAME.git" "$AUR_DIR"; then
+    if ! git clone "$AUR_REMOTE_URL" "$AUR_DIR"; then
         echo "Creating new AUR package: $PKGNAME"
         rm -rf "$AUR_DIR"
         AUR_DIR="$(mktemp -d)"
         git -C "$AUR_DIR" init
-        git -C "$AUR_DIR" remote add origin "ssh://aur@aur.archlinux.org/$PKGNAME.git"
+        git -C "$AUR_DIR" remote add origin "$AUR_REMOTE_URL"
     fi
 
     git config --global --add safe.directory "$AUR_DIR"

@@ -28,7 +28,7 @@ generate_srcinfo() {
     if (( EUID == 0 )); then
         id _build &>/dev/null || useradd -m _build
         chown -R _build: "$pkg_dir"
-        srcinfo="$(su _build -s /bin/sh -c 'cd "$1" && makepkg --printsrcinfo' -- "$pkg_dir")"
+        srcinfo="$(su _build -s /bin/sh -c 'cd "$0" && makepkg --printsrcinfo' -- "$pkg_dir")"
     else
         srcinfo="$(cd "$pkg_dir" && makepkg --printsrcinfo)"
     fi

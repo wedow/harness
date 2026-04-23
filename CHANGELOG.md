@@ -8,14 +8,21 @@ and this project adheres to Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- Added a `Release Rehearsal` workflow that exercises the Homebrew and AUR publish scripts against local mirrors before tagging.
 
 ### Changed
 
 ### Fixed
-- Hardened AUR release publishing in root-run CI environments by removing `su -c` shell-argument assumptions and validating generated `.SRCINFO` content before push.
 
 ### Removed
+
+## [0.1.3] - 2026-04-23
+
+### Added
+- Added a `Release Rehearsal` workflow that exercises the Homebrew and AUR publish scripts against local mirrors before tagging.
+
+### Fixed
+- Hardened AUR release publishing in root-run CI environments by switching `.SRCINFO` generation away from the broken `su -c` path and validating generated metadata before push.
+- Fixed the release rehearsal workflow so its tarball SHA step does not write into the directory it is archiving.
 
 ## [0.1.2] - 2026-04-23
 

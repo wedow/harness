@@ -26,13 +26,9 @@ generate_srcinfo() {
     local pkg_dir="$1"
     local srcinfo
     if (( EUID == 0 )); then
-        local build_dir
-        build_dir="$(mktemp -d)"
-        cp "$pkg_dir/PKGBUILD" "$build_dir/"
         id _build &>/dev/null || useradd -m _build
-        chown -R _build: "$build_dir"
-        srcinfo="$(su _build -s /bin/sh -c 'cd "$1" && makepkg --printsrcinfo' -- "$build_dir")"
-        rm -rf "$build_dir"
+        chown -R _build: "$pkg_dir"
+        srcinfo="$(su _build -s /bin/sh -c 'cd "$1" && makepkg --printsrcinfo' -- "$pkg_dir")"
     else
         srcinfo="$(cd "$pkg_dir" && makepkg --printsrcinfo)"
     fi

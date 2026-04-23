@@ -19,10 +19,11 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
   _call_id=""
   _error="false"
   in_fm=false
+  fm_done=false
   body=""
   while IFS= read -r line; do
-    if [[ "${line}" == "---" ]]; then
-      if ${in_fm}; then in_fm=false; continue
+    if [[ "${line}" == "---" ]] && ! ${fm_done}; then
+      if ${in_fm}; then in_fm=false; fm_done=true; continue
       else in_fm=true; continue; fi
     fi
     if ${in_fm}; then

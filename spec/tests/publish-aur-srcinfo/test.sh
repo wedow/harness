@@ -27,6 +27,7 @@ export HOME="${_tmpdir}/home"
 mkdir -p "$HOME"
 
 script="$test_dir/scripts/publish-aur.sh"
+perl -0pi -e 's/if \(\( EUID == 0 \)\); then/if false; then/' "$script"
 perl -0pi -e 's/main\(\) \{\n    echo "Publishing \$PKGNAME to AUR \(v\$VERSION\)"\n    setup_ssh\n    push_to_aur\n\}/main() {\n    generate_srcinfo "\$REPO_ROOT\/pkg\/aur\/\$PKGNAME"\n}/' "$script"
 
 bash "$script" v0.1.1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef

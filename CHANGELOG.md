@@ -12,6 +12,7 @@ and this project adheres to Semantic Versioning.
 ### Changed
 
 ### Fixed
+- Hardened AUR release publishing in root-run CI environments by removing `su -c` shell-argument assumptions and validating generated `.SRCINFO` content before push.
 
 ### Removed
 

@@ -26,11 +26,17 @@ generate_srcinfo() {
     local pkg_dir="$1"
     local srcinfo
     if (( EUID == 0 )); then
+        local pkg_dir_quoted
         id _build &>/dev/null || useradd -m _build
         chown -R _build: "$pkg_dir"
-        srcinfo="$(su _build -s /bin/sh -c 'cd "$0" && makepkg --printsrcinfo' -- "$pkg_dir")"
+        pkg_dir_quoted="${pkg_dir//\'/\'\\\'\'}"
+        srcinfo="$(su _build -s /bin/sh -c "cd '$pkg_dir_quoted' && makepkg --printsrcinfo")"
     else
         srcinfo="$(cd "$pkg_dir" && makepkg --printsrcinfo)"
+    fi
+    if ! grep -q '^pkgbase = ' <<<"$srcinfo"; then
+        echo "Failed to generate valid .SRCINFO"
+        exit 1
     fi
     printf '%s\n' "$srcinfo" > "$pkg_dir/.SRCINFO"
 }

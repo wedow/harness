@@ -27,24 +27,7 @@ export HOME="${_tmpdir}/home"
 mkdir -p "$HOME"
 
 script="$test_dir/scripts/publish-aur.sh"
-python - "$script" <<'PY'
-from pathlib import Path
-path = Path(__import__('sys').argv[1])
-text = path.read_text()
-old = '''main() {
-    echo "Publishing $PKGNAME to AUR (v$VERSION)"
-    setup_ssh
-    push_to_aur
-}
-'''
-new = '''main() {
-    generate_srcinfo "$REPO_ROOT/pkg/aur/$PKGNAME"
-}
-'''
-if old not in text:
-    raise SystemExit('expected main block not found')
-path.write_text(text.replace(old, new))
-PY
+perl -0pi -e 's/main\(\) \{\n    echo "Publishing \$PKGNAME to AUR \(v\$VERSION\)"\n    setup_ssh\n    push_to_aur\n\}/main() {\n    generate_srcinfo "\$REPO_ROOT\/pkg\/aur\/\$PKGNAME"\n}/' "$script"
 
 bash "$script" v0.1.1 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
 

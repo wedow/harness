@@ -1,0 +1,272 @@
+#!/usr/bin/env bash
+# edit_file — tool plugin: anchor-based file editor using LINE#HASH anchors.
+set -euo pipefail
+
+case "${1:-}" in
+  --schema)
+    cat <<'JSON'
+{
+  "name": "edit_file",
+  "description": "Edit files using LINE#ID anchors from read_file output. Read the file first, copy anchors exactly, then apply edits. Re-read after each successful edit before editing the same file again.",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Path to the file"
+      },
+      "edits": {
+        "type": "array",
+        "description": "Array of edit operations",
+        "items": {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": ["replace_range", "append_at", "prepend_at", "append_file", "prepend_file"],
+              "description": "Edit operation type"
+            },
+            "pos": {
+              "type": "string",
+              "description": "Start anchor LINE#HASH (e.g. '5#ZM')"
+            },
+            "end": {
+              "type": "string",
+              "description": "End anchor LINE#HASH for replace_range (inclusive)"
+            },
+            "content": {
+              "type": ["array", "string", "null"],
+              "description": "New content lines (array of strings preferred, null to delete range)",
+              "items": { "type": "string" }
+            }
+          },
+          "required": ["type"]
+        }
+      }
+    },
+    "required": ["path", "edits"]
+  }
+}
+JSON
+    ;;
+  --describe)
+    echo "Edit files using LINE#HASH anchors from read_file output"
+    ;;
+  --exec)
+    input="$(cat)"
+    path="$(echo "${input}" | jq -r '.path')"
+
+    if [[ "${path}" != /* ]]; then
+      path="${HARNESS_CWD:-${PWD}}/${path}"
+    fi
+
+    if [[ ! -f "${path}" ]]; then
+      echo "error: file not found: ${path}"
+      exit 1
+    fi
+
+    _lib="$(dirname "$0")/../lib/hashline.awk"
+    if [[ ! -f "${_lib}" ]]; then
+      echo "error: hashline.awk not found at ${_lib}"
+      exit 1
+    fi
+
+    edits_json="$(echo "${input}" | jq -c '.edits')"
+    num_edits="$(echo "${edits_json}" | jq 'length')"
+
+    if (( num_edits == 0 )); then
+      echo "error: no edits provided"
+      exit 1
+    fi
+
+    # --- Parse anchor "LINE#HASH" into "LINE HASH", or exit with error ---
+    parse_anchor() {
+      local anchor="$1" label="$2"
+      if [[ ! "${anchor}" =~ ^([0-9]+)#([ZPMQVRWSNKTXJBYH]{2})$ ]]; then
+        echo "error: invalid ${label} anchor '${anchor}' — expected LINE#HASH (e.g. '5#ZM')"
+        exit 1
+      fi
+      _pa_line="${BASH_REMATCH[1]}"
+      _pa_hash="${BASH_REMATCH[2]}"
+    }
+
+    # --- Collect all anchors to validate ---
+    anchor_pairs=()
+    for (( i = 0; i < num_edits; i++ )); do
+      edit="$(echo "${edits_json}" | jq -c ".[$i]")"
+      etype="$(echo "${edit}" | jq -r '.type')"
+
+      case "${etype}" in
+        replace_range)
+          pos="$(echo "${edit}" | jq -r '.pos')"
+          end="$(echo "${edit}" | jq -r '.end')"
+          if [[ -z "${pos}" || "${pos}" == "null" || -z "${end}" || "${end}" == "null" ]]; then
+            echo "error: replace_range requires both pos and end anchors"
+            exit 1
+          fi
+          parse_anchor "${pos}" "pos"
+          anchor_pairs+=("${_pa_line}:${_pa_hash}")
+          parse_anchor "${end}" "end"
+          anchor_pairs+=("${_pa_line}:${_pa_hash}")
+          ;;
+        append_at|prepend_at)
+          pos="$(echo "${edit}" | jq -r '.pos')"
+          if [[ -z "${pos}" || "${pos}" == "null" ]]; then
+            echo "error: ${etype} requires pos anchor"
+            exit 1
+          fi
+          parse_anchor "${pos}" "pos"
+          anchor_pairs+=("${_pa_line}:${_pa_hash}")
+          ;;
+        append_file|prepend_file)
+          # no anchors needed
+          ;;
+        *)
+          echo "error: unknown edit type '${etype}'"
+          exit 1
+          ;;
+      esac
+    done
+
+    # --- Validate all anchors at once ---
+    if (( ${#anchor_pairs[@]} > 0 )); then
+      # Deduplicate anchors
+      unique_anchors="$(printf '%s\n' "${anchor_pairs[@]}" | sort -u | paste -sd, -)"
+      if ! awk -f "${_lib}" -v mode=context -v anchors="${unique_anchors}" < "${path}" 2>&1; then
+        exit 1
+      fi
+    fi
+
+    # --- Write content lines from an edit's JSON to a file ---
+    # Returns 1 if content is null (delete mode), 0 otherwise.
+    # Writes to the file path given as $2, stripping hashline prefixes.
+    write_content() {
+      local edit_json="$1" dest="$2"
+      local content_json
+      content_json="$(echo "${edit_json}" | jq -c '.content')"
+
+      if [[ "${content_json}" == "null" ]]; then
+        return 1  # signals delete mode
+      fi
+
+      if echo "${content_json}" | jq -e 'type == "array"' >/dev/null 2>&1; then
+        echo "${content_json}" | jq -r '.[]'
+      else
+        echo "${content_json}" | jq -r '.'
+      fi | sed 's/^[0-9][0-9]*#[A-Z]\{2\}://' >> "${dest}"
+    }
+
+    # --- Extract line number from validated anchor (anchors already validated above) ---
+    anchor_line() { echo "${1%%#*}"; }
+
+    # --- Build sorted edit list (bottom-up by effective line number) ---
+    # Each entry: "effective_line edit_index"
+    edit_order=()
+    for (( i = 0; i < num_edits; i++ )); do
+      edit="$(echo "${edits_json}" | jq -c ".[$i]")"
+      etype="$(echo "${edit}" | jq -r '.type')"
+      case "${etype}" in
+        replace_range|append_at|prepend_at)
+          pos="$(echo "${edit}" | jq -r '.pos')"
+          edit_order+=("$(anchor_line "${pos}") ${i}")
+          ;;
+        append_file)
+          edit_order+=("999999999 ${i}")
+          ;;
+        prepend_file)
+          edit_order+=("0 ${i}")
+          ;;
+      esac
+    done
+
+    # Sort descending by effective line number
+    sorted_indices=()
+    while IFS= read -r line; do
+      sorted_indices+=("${line##* }")
+    done < <(printf '%s\n' "${edit_order[@]}" | sort -t' ' -k1 -rn)
+
+    # --- Apply edits bottom-up ---
+    tmpfile="$(mktemp)"
+    trap 'rm -f "${tmpfile}"' EXIT
+
+    total_edited=0
+    edit_summaries=()
+
+    for idx in "${sorted_indices[@]}"; do
+      edit="$(echo "${edits_json}" | jq -c ".[$idx]")"
+      etype="$(echo "${edit}" | jq -r '.type')"
+
+      case "${etype}" in
+        replace_range)
+          pos_line="$(anchor_line "$(echo "${edit}" | jq -r '.pos')")"
+          end_line="$(anchor_line "$(echo "${edit}" | jq -r '.end')")"
+
+          head -n $((pos_line - 1)) "${path}" > "${tmpfile}"
+          write_content "${edit}" "${tmpfile}" || true
+          tail -n +$((end_line + 1)) "${path}" >> "${tmpfile}"
+          mv "${tmpfile}" "${path}"
+
+          range_size=$(( end_line - pos_line + 1 ))
+          total_edited=$(( total_edited + range_size ))
+          edit_summaries+=("replaced lines ${pos_line}-${end_line}")
+          ;;
+
+        append_at)
+          pos_line="$(anchor_line "$(echo "${edit}" | jq -r '.pos')")"
+
+          head -n "${pos_line}" "${path}" > "${tmpfile}"
+          write_content "${edit}" "${tmpfile}" || true
+          tail -n +$((pos_line + 1)) "${path}" >> "${tmpfile}"
+          mv "${tmpfile}" "${path}"
+
+          total_edited=$(( total_edited + 1 ))
+          edit_summaries+=("appended after line ${pos_line}")
+          ;;
+
+        prepend_at)
+          pos_line="$(anchor_line "$(echo "${edit}" | jq -r '.pos')")"
+
+          head -n $((pos_line - 1)) "${path}" > "${tmpfile}"
+          write_content "${edit}" "${tmpfile}" || true
+          tail -n +"${pos_line}" "${path}" >> "${tmpfile}"
+          mv "${tmpfile}" "${path}"
+
+          total_edited=$(( total_edited + 1 ))
+          edit_summaries+=("prepended before line ${pos_line}")
+          ;;
+
+        append_file)
+          write_content "${edit}" "${path}" || true
+          edit_summaries+=("appended to end of file")
+          ;;
+
+        prepend_file)
+          if write_content "${edit}" "${tmpfile}"; then
+            cat "${path}" >> "${tmpfile}"
+            mv "${tmpfile}" "${path}"
+          fi
+          edit_summaries+=("prepended to start of file")
+          ;;
+      esac
+    done
+
+    # --- Output summary with context ---
+    echo "edited ${path}:"
+    for summary in "${edit_summaries[@]}"; do
+      echo "  - ${summary}"
+    done
+    echo ""
+
+    # Show full file in hashline format for re-anchoring
+    total="$(wc -l < "${path}" | tr -d ' ')"
+    if (( total <= 80 )); then
+      awk -f "${_lib}" < "${path}"
+    else
+      echo "(${total} lines — use read_file to view)"
+    fi
+    ;;
+  *)
+    echo "usage: edit_file --schema | --describe | --exec" >&2
+    exit 1
+    ;;
+esac

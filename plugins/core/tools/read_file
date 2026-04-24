@@ -7,7 +7,7 @@ case "${1:-}" in
     cat <<'JSON'
 {
   "name": "read_file",
-  "description": "Read the contents of a file. Optionally specify a line range. Returns the file content with line numbers.",
+  "description": "Read the contents of a file. Optionally specify a line range. Returns the file content in LINENUM#HASH:content format where #HASH is a 2-character verification anchor.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -57,12 +57,14 @@ JSON
       exit 1
     fi
 
+    lib="$(dirname "$0")/../lib/hashline.awk"
+
     if [[ -n "${limit}" ]]; then
-      sed -n "${start},$((start + limit - 1))p" "${path}" | nl -ba -w4 -v "${start}"
+      awk -f "${lib}" -v start_line="${start}" -v max_lines="${limit}" < "${path}"
     elif [[ -n "${offset}" ]]; then
-      tail -n "+${start}" "${path}" | nl -ba -w4 -v "${start}"
+      awk -f "${lib}" -v start_line="${start}" < "${path}"
     else
-      nl -ba -w4 "${path}"
+      awk -f "${lib}" < "${path}"
     fi
     ;;
   *)

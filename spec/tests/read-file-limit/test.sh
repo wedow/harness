@@ -22,11 +22,11 @@ assert_eq "error-mentions-limit" "$(echo "$output" | grep -c 'limit: 50')" "1"
 # 2. Explicit limit bypasses the cap
 output=$(echo "{\"path\":\"${file}\",\"limit\":10}" | "${tool}" --exec 2>&1)
 assert_eq "limit-returns-10-lines" "$(echo "$output" | wc -l | tr -d ' ')" "10"
-assert_eq "limit-starts-at-1" "$(echo "$output" | head -1 | awk '{print $2, $3}')" "line 1"
+assert_eq "limit-starts-at-1" "$(echo "$output" | head -1 | sed 's/^[0-9]*#[A-Z][A-Z]://')" "line 1"
 
 # 3. Offset bypasses the cap
 output=$(echo "{\"path\":\"${file}\",\"offset\":90}" | "${tool}" --exec 2>&1)
-assert_eq "offset-returns-tail" "$(echo "$output" | head -1 | awk '{print $2, $3}')" "line 90"
+assert_eq "offset-returns-tail" "$(echo "$output" | head -1 | sed 's/^[0-9]*#[A-Z][A-Z]://')" "line 90"
 
 # 4. File under limit reads normally
 export HARNESS_READ_LIMIT=200
@@ -37,5 +37,5 @@ assert_eq "under-limit-full-read" "$(echo "$output" | wc -l | tr -d ' ')" "100"
 unset HARNESS_READ_LIMIT
 output=$(echo "{\"path\":\"${file}\",\"offset\":20,\"limit\":5}" | "${tool}" --exec 2>&1)
 assert_eq "window-count" "$(echo "$output" | wc -l | tr -d ' ')" "5"
-assert_eq "window-start" "$(echo "$output" | head -1 | awk '{print $2, $3}')" "line 20"
-assert_eq "window-end" "$(echo "$output" | tail -1 | awk '{print $2, $3}')" "line 24"
+assert_eq "window-start" "$(echo "$output" | head -1 | sed 's/^[0-9]*#[A-Z][A-Z]://')" "line 20"
+assert_eq "window-end" "$(echo "$output" | tail -1 | sed 's/^[0-9]*#[A-Z][A-Z]://')" "line 24"

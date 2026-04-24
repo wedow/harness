@@ -71,7 +71,7 @@ Override either by placing a same-named hook in a higher-priority source dir.
 
 **Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `agent`, `repl`, `acp`, `acp-stream`, `session`, `tools`, `hooks`, `help`, `version`. On a TTY with no args, the default command is `repl`; otherwise `agent` (headless one-shot). Unrecognized first arg also falls back to `agent`.
 
-**Tools** (`tools/`): Executables responding to `--schema`, `--describe`, `--exec`. Input is JSON on stdin via `--exec`, output on stdout. Language-agnostic. Core tools: `bash`, `read_file`, `write_file`, `str_replace`. Additional bundled tools: `agent` (spawn subagent sessions), `skill` (load skill instructions).
+**Tools** (`tools/`): Executables responding to `--schema`, `--describe`, `--exec`. Input is JSON on stdin via `--exec`, output on stdout. Language-agnostic. Core tools: `bash`, `read_file`, `write_file`, `edit_file`. Additional bundled tools: `agent` (spawn subagent sessions), `skill` (load skill instructions).
 
 **Hooks** (`hooks.d/<stage>/`): Pipeline executables named `NN-name` (numeric prefix for sort order). Each hook's stdout feeds the next's stdin. Non-zero exit aborts the chain. Stages: `resolve`, `start`, `assemble`, `send`, `receive`, `tool_exec`, `tool_done`, `error`, `done`.
 

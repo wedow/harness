@@ -8,12 +8,16 @@ and this project adheres to Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- Added `edit_file` tool: anchor-based file editor using `LINE#HASH` references from `read_file` output. Edits are validated against the live file before mutation, preventing stale edits. Supports `replace_range`, `append_at`, `prepend_at`, `append_file`, and `prepend_file` operations.
+- Added `plugins/core/lib/hashline.awk`: portable awk library (macOS + Linux) implementing djb2 line hashing with format, validate, and context modes.
 
 ### Changed
+- Changed `read_file` output format from plain line numbers (`nl`) to `LINENUM#HASH:content`, where `#HASH` is a 2-character verification anchor. Structural-only lines (e.g. `}`, blank lines) get position-dependent hashes to avoid collisions.
 
 ### Fixed
 
 ### Removed
+- Removed `str_replace` tool, superseded by `edit_file`.
 
 ## [0.1.3] - 2026-04-23
 

@@ -41,6 +41,7 @@ harness — minimal agent loop, maximum extensibility
 usage:
   hs "do something"         one-shot: run agent with a message
   hs                        interactive REPL (new session)
+  hs resume                 resume the most recent session
   hs <session-id>           resume a session
   hs acp                    ACP JSON-RPC adapter (stdio)
   hs agent "do something"   one-shot (explicit command name)
@@ -63,7 +64,7 @@ for src in "${_HARNESS_SOURCES[@]}"; do
   done
 done
 # Show any commands not already listed in the usage block
-builtin_cmds="acp agent session tools hooks version help"
+builtin_cmds="acp agent resume session tools hooks version help"
 for name in $(printf '%s\n' "${!cmd_map[@]}" | sort); do
   [[ " ${builtin_cmds} " == *" ${name} "* ]] && continue
   path="${cmd_map[$name]}"

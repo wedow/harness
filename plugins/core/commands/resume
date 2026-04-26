@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+# harness resume — resume the most recent session
+set -euo pipefail
+
+case "${1:-}" in
+  --describe) echo "resume the most recent session"; exit 0 ;;
+esac
+
+source "${HARNESS_ROOT}/bin/harness"
+
+id="$(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -1)"
+[[ -n "${id}" ]] || _die "no sessions found"
+
+exec "$( _find_command repl )" "${id}" "$@"

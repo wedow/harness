@@ -104,6 +104,7 @@ touch "${session_dir}/.stream"
 
 agent_pid=""
 agent_pgid=""
+interrupts=0
 _setsid() {
   if command -v setsid >/dev/null 2>&1; then
     setsid "$@"
@@ -111,16 +112,34 @@ _setsid() {
     "$@"
   fi
 }
-_cleanup_repl() {
+_kill_agent_group() {
   [[ -n "${agent_pgid}" ]] && kill -TERM -- "-${agent_pgid}" 2>/dev/null || true
-  [[ -n "${agent_pid}" ]] && kill "${agent_pid}" 2>/dev/null || true
+  [[ -n "${agent_pid}" ]] && kill -TERM "${agent_pid}" 2>/dev/null || true
+}
+_hard_kill_repl() {
+  [[ -n "${agent_pgid}" ]] && kill -KILL -- "-${agent_pgid}" 2>/dev/null || true
+  [[ -n "${agent_pid}" ]] && kill -KILL "${agent_pid}" 2>/dev/null || true
+}
+_handle_sigint() {
+  interrupts=$((interrupts + 1))
+  if (( interrupts >= 2 )); then
+    _hard_kill_repl
+    trap - EXIT HUP TERM INT
+    exec kill -KILL $$
+  fi
+  _kill_agent_group
+}
+_cleanup_repl() {
+  _kill_agent_group
   wait 2>/dev/null || true
 }
-trap _cleanup_repl EXIT HUP TERM INT
+trap _cleanup_repl EXIT HUP TERM
+trap _handle_sigint INT
 
 while true; do
   printf '\n\033[1;36mYou:\033[0m '
   IFS= read -r input || break
+  interrupts=0
   [[ -z "${input}" ]] && continue
   [[ "${input}" == "/quit" || "${input}" == "/exit" ]] && break
   [[ "${input}" == "/session" ]] && { echo "${session_dir}"; continue; }
@@ -146,7 +165,5 @@ while true; do
   agent_pid=""
   agent_pgid=""
   rm -f "${_pidfile}"
-  echo
-done
   echo
 done

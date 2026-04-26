@@ -72,7 +72,7 @@ pty_spawn() {
   if [[ "$(uname)" == "Darwin" ]]; then
     exec script -q /dev/null bash -c "$1"
   else
-    exec script -q /dev/null -c "$1"
+    exec script -q -c "$1" /dev/null
   fi
 }
 

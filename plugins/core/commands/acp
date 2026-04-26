@@ -7,13 +7,6 @@ case "${1:-}" in --describe) echo "ACP JSON-RPC stdio adapter"; exit 0 ;; esac
 source "${HARNESS_ROOT}/bin/harness"
 source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
 
-# portable setsid: macOS lacks GNU setsid
-_setsid() {
-  if command -v setsid &>/dev/null; then setsid "$@"
-  else perl -e 'use POSIX; POSIX::setsid(); exec @ARGV' "$@"
-  fi
-}
-
 # --- JSON-RPC helpers ---
 
 _rpc_result() {
@@ -82,18 +75,13 @@ while IFS= read -r line; do
       _save_message "${_sdir}" "${_prompt}"
       > "${_sdir}/.stream"
 
-      # Spawn agent in isolated process group (cancellable)
-      _pidfile="${_sdir}/.pid"
-      rm -f "${_pidfile}"
+      # Spawn agent in its own process group (cancellable).
+      # `set -m` makes the bg job a new pgid leader, so $! is also the pgid.
       export SESSION_DIR="${_sdir}"
-      _setsid bash -c "
-        echo \$\$ > \"${_pidfile}\"
-        source \"${HARNESS_ROOT}/bin/harness\"
-        _refresh_sources
-        agent_loop \"${_sdir}\"
-      " &>/dev/null &
-      for _i in $(seq 1 50); do [[ -s "${_pidfile}" ]] && break; sleep 0.1; done
-      _active_pgid="$(cat "${_pidfile}" 2>/dev/null || echo "")"
+      set -m
+      agent_loop "${_sdir}" &>/dev/null &
+      _active_pid=$!
+      set +m
 
       # Save stdin on fd 4 for cancel polling, open tail on fd 5
       exec 4<&0
@@ -101,7 +89,7 @@ while IFS= read -r line; do
       _tail_pid=$!
 
       _cleanup_acp() {
-        [[ -n "${_active_pgid:-}" ]] && kill -TERM -- -"${_active_pgid}" 2>/dev/null || true
+        [[ -n "${_active_pid:-}" ]] && kill -TERM -- -"${_active_pid}" 2>/dev/null || true
         [[ -n "${_tail_pid:-}" ]] && kill "${_tail_pid}" 2>/dev/null || true
         exec 5<&- 2>/dev/null || true
         exec 4<&- 2>/dev/null || true
@@ -112,7 +100,7 @@ while IFS= read -r line; do
       # Source stream translator fresh each prompt (picks up code changes)
       source "${HARNESS_ROOT}/plugins/core/commands/acp-stream"
 
-      _acp_stream_loop "${_sid}" "${_active_pgid}"
+      _acp_stream_loop "${_sid}" "${_active_pid}"
       _acp_stop="${_ACP_STOP_REASON}"
 
       _rpc_result "${id}" "$(jq -c -n --arg sid "${_sid}" --arg sr "${_acp_stop}" \

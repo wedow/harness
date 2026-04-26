@@ -7,6 +7,7 @@ case "${1:-}" in
 esac
 
 source "${HARNESS_ROOT}/bin/harness"
+_refresh_sources
 
 id="$(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -1)"
 [[ -n "${id}" ]] || _die "no sessions found"

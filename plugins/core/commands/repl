@@ -103,34 +103,21 @@ export HARNESS_LOG="${session_dir}/repl.log"
 touch "${session_dir}/.stream"
 
 agent_pid=""
-agent_pgid=""
 interrupts=0
-_setsid() {
-  if command -v setsid >/dev/null 2>&1; then
-    setsid "$@"
-  else
-    "$@"
-  fi
-}
-_kill_agent_group() {
-  [[ -n "${agent_pgid}" ]] && kill -TERM -- "-${agent_pgid}" 2>/dev/null || true
-  [[ -n "${agent_pid}" ]] && kill -TERM "${agent_pid}" 2>/dev/null || true
-}
-_hard_kill_repl() {
-  [[ -n "${agent_pgid}" ]] && kill -KILL -- "-${agent_pgid}" 2>/dev/null || true
-  [[ -n "${agent_pid}" ]] && kill -KILL "${agent_pid}" 2>/dev/null || true
-}
+# With `set -m`, agent_pid is also the process group id.
+_kill_group() { [[ -n "${agent_pid}" ]] && kill -TERM -- "-${agent_pid}" 2>/dev/null || true; }
+_hard_kill()  { [[ -n "${agent_pid}" ]] && kill -KILL -- "-${agent_pid}" 2>/dev/null || true; }
 _handle_sigint() {
   interrupts=$((interrupts + 1))
   if (( interrupts >= 2 )); then
-    _hard_kill_repl
+    _hard_kill
     trap - EXIT HUP TERM INT
     exec kill -KILL $$
   fi
-  _kill_agent_group
+  _kill_group
 }
 _cleanup_repl() {
-  _kill_agent_group
+  _kill_group
   wait 2>/dev/null || true
 }
 trap _cleanup_repl EXIT HUP TERM
@@ -149,21 +136,12 @@ while true; do
 
   > "${session_dir}/.stream"
 
-  _pidfile="${session_dir}/.pid"
-  rm -f "${_pidfile}"
-  _setsid bash -c "
-    echo \$\$ > \"${_pidfile}\"
-    source \"${HARNESS_ROOT}/bin/harness\"
-    _refresh_sources
-    agent_loop \"${session_dir}\"
-  " >/dev/null 2>&1 &
+  set -m
+  agent_loop "${session_dir}" >/dev/null &
   agent_pid=$!
-  for _i in $(seq 1 50); do [[ -s "${_pidfile}" ]] && break; sleep 0.1; done
-  agent_pgid="$(cat "${_pidfile}" 2>/dev/null || echo "")"
+  set +m
   _render_stream "${session_dir}/.stream" "${agent_pid}"
   wait "${agent_pid}" 2>/dev/null || true
   agent_pid=""
-  agent_pgid=""
-  rm -f "${_pidfile}"
   echo
 done

@@ -32,7 +32,7 @@ jobs:
     container:
       image: archlinux:latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Install dependencies
         run: pacman -Syu --noconfirm base-devel bash curl git openssh jq pacman-contrib

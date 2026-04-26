@@ -103,7 +103,16 @@ export HARNESS_LOG="${session_dir}/repl.log"
 touch "${session_dir}/.stream"
 
 agent_pid=""
+agent_pgid=""
+_setsid() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@"
+  else
+    "$@"
+  fi
+}
 _cleanup_repl() {
+  [[ -n "${agent_pgid}" ]] && kill -TERM -- "-${agent_pgid}" 2>/dev/null || true
   [[ -n "${agent_pid}" ]] && kill "${agent_pid}" 2>/dev/null || true
   wait 2>/dev/null || true
 }
@@ -121,10 +130,23 @@ while true; do
 
   > "${session_dir}/.stream"
 
-  agent_loop "${session_dir}" >/dev/null &
+  _pidfile="${session_dir}/.pid"
+  rm -f "${_pidfile}"
+  _setsid bash -c "
+    echo \$\$ > \"${_pidfile}\"
+    source \"${HARNESS_ROOT}/bin/harness\"
+    _refresh_sources
+    agent_loop \"${session_dir}\"
+  " >/dev/null 2>&1 &
   agent_pid=$!
+  for _i in $(seq 1 50); do [[ -s "${_pidfile}" ]] && break; sleep 0.1; done
+  agent_pgid="$(cat "${_pidfile}" 2>/dev/null || echo "")"
   _render_stream "${session_dir}/.stream" "${agent_pid}"
   wait "${agent_pid}" 2>/dev/null || true
   agent_pid=""
+  agent_pgid=""
+  rm -f "${_pidfile}"
+  echo
+done
   echo
 done

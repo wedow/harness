@@ -112,7 +112,9 @@ _handle_sigint() {
   if (( interrupts >= 2 )); then
     _hard_kill
     trap - EXIT HUP TERM INT
-    exec kill -KILL $$
+    # `0` targets our own process group so the stream tail (started in
+    # _render_stream, in repl's pgid not the agent's) is killed too.
+    exec kill -KILL 0
   fi
   _kill_group
 }

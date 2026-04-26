@@ -21,7 +21,7 @@ chmod +x "${HARNESS_HOME}/hooks.d/start/05-stubborn"
 repl="${HARNESS_ROOT}/plugins/core/commands/repl"
 session_name="$(basename "${HARNESS_SESSION}")"
 
-script -q /dev/null -c "printf 'hello\n' | bash '${repl}' '${session_name}' >/dev/null 2>&1" &
+pty_spawn "printf 'hello\n' | bash '${repl}' '${session_name}' >/dev/null 2>&1" &
 repl_pid=$!
 sleep 1
 

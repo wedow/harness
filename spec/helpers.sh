@@ -64,6 +64,18 @@ run_with_timeout() {
   fi
 }
 
+# pty_spawn CMD — run CMD inside a pty so signals like SIGINT aren't masked.
+# Bridges util-linux `script -c CMD FILE` and BSD `script FILE shell -c CMD`.
+# `exec` is required so $! in the caller resolves to script's pid (and pgid),
+# not the wrapping subshell when this is invoked with `&`.
+pty_spawn() {
+  if [[ "$(uname)" == "Darwin" ]]; then
+    exec script -q /dev/null bash -c "$1"
+  else
+    exec script -q /dev/null -c "$1"
+  fi
+}
+
 # make_sources DIR — create a minimal source dir and export HARNESS_SOURCES
 make_sources() {
   local dir="$1"

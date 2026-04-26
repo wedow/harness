@@ -21,9 +21,9 @@ chmod +x "${HARNESS_HOME}/hooks.d/start/05-slow"
 repl="${HARNESS_ROOT}/plugins/core/commands/repl"
 session_name="$(basename "${HARNESS_SESSION}")"
 
-# `script` gives the repl a pty. Without one, bash backgrounds the repl with
-# SIGINT set to SIG_IGN and `trap _handle_sigint INT` is silently a no-op.
-script -q /dev/null -c "printf 'hello\n' | bash '${repl}' '${session_name}' >/dev/null 2>&1" &
+# pty_spawn runs the repl inside a pty. Without one, bash backgrounds the repl
+# with SIGINT set to SIG_IGN and `trap _handle_sigint INT` is silently a no-op.
+pty_spawn "printf 'hello\n' | bash '${repl}' '${session_name}' >/dev/null 2>&1" &
 repl_pid=$!
 
 # Don't send SIGINT until the slow hook has actually started — otherwise the

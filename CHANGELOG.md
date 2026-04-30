@@ -8,16 +8,31 @@ and this project adheres to Semantic Versioning.
 ## [Unreleased]
 
 ### Added
-- Added `edit_file` tool: anchor-based file editor using `LINE#HASH` references from `read_file` output. Edits are validated against the live file before mutation, preventing stale edits. Supports `replace_range`, `append_at`, `prepend_at`, `append_file`, and `prepend_file` operations.
-- Added `plugins/core/lib/hashline.awk`: portable awk library (macOS + Linux) implementing djb2 line hashing with format, validate, and context modes.
 
 ### Changed
-- Changed `read_file` output format from plain line numbers (`nl`) to `LINENUM#HASH:content`, where `#HASH` is a 2-character verification anchor. Structural-only lines (e.g. `}`, blank lines) get position-dependent hashes to avoid collisions.
 
 ### Fixed
 
 ### Removed
-- Removed `str_replace` tool, superseded by `edit_file`.
+
+## [0.2.0] - 2026-04-29
+
+### Added
+- Added an `edit_file` tool for anchor-based file edits using `LINE#HASH` references from `read_file`.
+- Added a portable `hashline.awk` helper for stable line anchors across macOS and Linux.
+- Added a `resume` command for continuing sessions from the CLI.
+
+### Changed
+- Changed `read_file` output from plain line numbers to `LINENUM#HASH:content` anchors for safer file editing.
+- Simplified agent spawning and refreshed workflow actions and test dependencies.
+
+### Fixed
+- Fixed REPL SIGINT cleanup and added a hard-kill path on repeated interrupt.
+- Fixed PTY helper script argument ordering.
+- Fixed publish/test workflow coverage around AUR metadata generation and Node 24 workflow validation.
+
+### Removed
+- Removed the `str_replace` tool, superseded by `edit_file`.
 
 ## [0.1.3] - 2026-04-23
 

@@ -43,6 +43,12 @@ JSON
     [[ -n "${model}" ]]    && env_args+=(HARNESS_MODEL="${model}")
     [[ -n "${provider}" ]] && env_args+=(HARNESS_PROVIDER="${provider}")
 
+    # Nest subagent sessions under the current agent's session dir
+    if [[ -n "${HARNESS_SESSION:-}" ]]; then
+      env_args+=(HARNESS_SESSIONS="${HARNESS_SESSION}/.harness/sessions")
+      env_args+=(HARNESS_PARENT_SESSION="${HARNESS_SESSION##*/}")
+    fi
+
     # Run subagent — stdout is the final output, stderr has session info/logs
     workdir="${HARNESS_CWD:-${PWD}}"
     result="$(cd "${workdir}" && env "${env_args[@]+"${env_args[@]}"}" "${HARNESS_ROOT}/bin/harness" run "${prompt}" 2>/dev/null)" || true

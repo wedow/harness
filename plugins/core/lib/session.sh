@@ -12,6 +12,7 @@ model=${HARNESS_MODEL}
 provider=${HARNESS_PROVIDER}
 created=$(date -Iseconds)
 cwd=${cwd}
+parent=${HARNESS_PARENT_SESSION:-}
 EOF
   echo "${dir}"
 }

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 31-subagent-role — when running as a subagent, inject a prompt override
+# clarifying that this agent should execute directly, not delegate further.
+set -euo pipefail
+
+payload="$(cat)"
+
+if [[ -z "${HARNESS_PARENT_SESSION:-}" ]]; then
+  echo "${payload}"
+  exit 0
+fi
+
+role='<subagent_role>
+You are a subagent — a focused executor spawned by a parent agent to handle a specific task. Execute the task directly using your tools. Do NOT spawn further subagents or delegate; you are the one doing the work. Report your results clearly when done.
+</subagent_role>'
+
+echo "${payload}" | jq --arg role "${role}" '.system = .system + "\n\n" + $role'

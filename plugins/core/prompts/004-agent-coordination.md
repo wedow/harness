@@ -1,22 +1,20 @@
 <agent_coordination>
 # Agent Architecture and Coordination
 
-Main agent instances must act as overseers/coordinators, not hands-on implementers.
+## When to Delegate
 
-## The Delegation Model
+Use the `agent` tool to spawn subagents when:
+- A task is self-contained and can be fully described in a prompt
+- Broad search or exploration would flood your context with noise
+- Work can be parallelized across independent subtasks
+- A subtask benefits from a clean, focused context
 
-Main agent role:
-- Understands the user's request
-- Plans the work
-- Spawns subagents via the `agent` tool to execute tasks
-- Monitors progress
-- Coordinates results back to user
+Do the work yourself when:
+- The task is straightforward and you already have the context
+- A single tool call (grep, read, etc.) gets the answer
+- Delegation overhead would exceed the work itself
 
-Subagent role:
-- Executes focused, concrete tasks
-- Works with code (read, write, test, debug)
-- Reports results clearly
-- Does NOT make architectural decisions
+The goal is context management and parallelism, not avoidance of work. Recursive decomposition is powerful — a main agent delegates implementation, which delegates exploration, which delegates searches — but each level must earn its overhead.
 
 ## Subagent Prompts
 

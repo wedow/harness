@@ -20,4 +20,12 @@ if [[ -d "${session}/notes" ]]; then
   done
 fi
 
+if [[ -d "${session}/archives" ]]; then
+  meta+=$'\n'"- Archives: ${session}/archives/"
+  for d in "${session}/archives/"*/; do
+    [[ -d "${d}" ]] || continue
+    meta+=$'\n'"  - $(basename "${d}")"
+  done
+fi
+
 echo "${payload}" | jq --arg meta "${meta}" '.system += $meta'

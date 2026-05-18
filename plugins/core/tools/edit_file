@@ -65,7 +65,8 @@ JSON
       exit 1
     fi
 
-    _lib="$(dirname "$0")/../lib/hashline.awk"
+    _self="$0"; [[ -L "$_self" ]] && _self="$(readlink -f "$_self")"
+    _lib="$(dirname "$_self")/../lib/hashline.awk"
     if [[ ! -f "${_lib}" ]]; then
       echo "error: hashline.awk not found at ${_lib}"
       exit 1

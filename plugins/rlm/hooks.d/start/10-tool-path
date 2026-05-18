@@ -20,8 +20,9 @@ for src in "${sources[@]}"; do
   done
 done
 
-# Create symlinks
+# Create symlinks (skip 'bash' — it shadows /usr/bin/bash via #!/usr/bin/env bash shebangs)
 for name in "${!tool_map[@]}"; do
+  [[ "${name}" == "bash" ]] && continue
   ln -sf "${tool_map[$name]}" "${tool_bin}/${name}"
 done
 

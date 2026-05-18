@@ -1,76 +1,49 @@
 #!/usr/bin/env bash
-# 25-compact — truncate large content in older messages, leave breadcrumbs.
-# Two thresholds:
-#   RLM_COMPACT_TOTAL   (default 200000 chars) — skip compaction entirely if
-#                        total message content is under this
-#   RLM_COMPACT_MESSAGE (default 8000 chars)   — per-message truncation size
-#                        for messages in the compaction window
-# Handles Anthropic, OpenAI, and ChatGPT message formats.
+# 25-compact — archive-based compaction. When total message content exceeds
+# RLM_COMPACT_TOTAL (default 200000 chars), archives the current messages dir
+# and injects a continuation message. Signals reassembly via next_state=assemble.
 set -euo pipefail
 
 payload="$(cat)"
 
-has_messages="$(echo "${payload}" | jq 'has("messages") and (.messages | length) > 0')"
-[[ "${has_messages}" == "true" ]] || { echo "${payload}"; exit 0; }
+session="${HARNESS_SESSION:-}"
+[[ -n "${session}" && -d "${session}/messages" ]] || { echo "${payload}"; exit 0; }
 
 total_threshold="${RLM_COMPACT_TOTAL:-200000}"
-msg_threshold="${RLM_COMPACT_MESSAGE:-8000}"
-keep="${RLM_KEEP_RECENT:-6}"
-session="${HARNESS_SESSION:-}"
+msg_dir="${session}/messages"
 
-echo "${payload}" | jq \
-  --argjson total_thresh "${total_threshold}" \
-  --argjson msg_thresh "${msg_threshold}" \
-  --argjson keep "${keep}" \
-  --arg session "${session}" '
+# Estimate total content size from message files on disk
+total_size=0
+for f in "${msg_dir}"/*.md; do
+  [[ -f "${f}" ]] || continue
+  size="$(wc -c < "${f}")"
+  total_size=$((total_size + size))
+done
 
-# Estimate total content size across all messages
-def content_size:
-  if type == "string" then length
-  elif type == "array" then map(
-    (.content // .text // .output // "" | if type == "string" then length else 0 end)
-  ) | add // 0
-  else 0 end;
+if (( total_size < total_threshold )); then
+  echo "${payload}"
+  exit 0
+fi
 
-def total_size:
-  [.[] | (.content // .output // "" | content_size)] | add // 0;
+# Archive current messages
+ts="$(date +%s)"
+archive_dir="${session}/archives/${ts}"
+mkdir -p "${archive_dir}"
+mv "${msg_dir}" "${archive_dir}/messages"
+mkdir -p "${msg_dir}"
 
-# Only compact if total content exceeds threshold
-if (.messages | total_size) < $total_thresh then .
-else
-  def trunc:
-    if type == "string" and length > $msg_thresh then
-      .[:($msg_thresh / 2 | floor)] +
-      "\n\n<!-- truncated (" + (length | tostring) +
-      " chars). Full session history: " + $session + "/messages/ -->"
-    else . end;
+# Write continuation message
+cat > "${msg_dir}/0001-user.md" <<EOF
+---
+role: user
+seq: 0001
+timestamp: $(date -Iseconds)
+---
+[Session continuation] This session continues from an archived conversation.
+Archives are at ${session}/archives/ (most recent: ${ts}).
+Use subagents to search archive messages if you need history or context.
+Resume the task in progress.
+EOF
 
-  .messages |= (
-    (length - $keep) as $cutoff |
-    [range(length) as $i | .[$i] |
-      if $i >= ([0, $cutoff] | max) then .
-      else
-        # Anthropic: content array with tool_result / text blocks
-        if (.content | type) == "array" then
-          .content |= map(
-            if .type == "tool_result" and (.content | type) == "string" then
-              .content |= trunc
-            elif .type == "text" and (.text | type) == "string" then
-              .text |= trunc
-            else . end
-          )
-        # OpenAI: role=tool
-        elif .role == "tool" and (.content | type) == "string" then
-          .content |= trunc
-        # ChatGPT: function_call_output
-        elif .type == "function_call_output" and (.output | type) == "string" then
-          .output |= trunc
-        # Any message with large string content
-        elif (.content | type) == "string" then
-          .content |= trunc
-        else . end
-      end
-    ]
-  )
-end
-'
+# Signal reassembly — the assemble pipeline will re-run with fresh messages
+printf '{"next_state": "assemble"}\n'

@@ -35,6 +35,8 @@ JSON
     # Run in the session's original cwd if available
     cwd="${HARNESS_CWD:-${PWD}}"
     cd "${cwd}" 2>/dev/null || true
+    # Put discovered tools on PATH so scripts can invoke them by name
+    [[ -n "${HARNESS_TOOL_PATH:-}" ]] && export PATH="${HARNESS_TOOL_PATH}:${PATH}"
     # Execute with a timeout, capture both stdout and stderr
     _timeout="${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}"
     if command -v timeout &>/dev/null; then

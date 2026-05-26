@@ -104,6 +104,7 @@ if [[ "${streaming}" == true ]]; then
       continue
     fi
     data="${line#data:}"; data="${data# }"
+    [[ "${data}" == "[DONE]" ]] && continue
 
     event_type="$(echo "${data}" | jq -r '.type // ""')"
 

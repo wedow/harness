@@ -39,10 +39,22 @@ role: user
 seq: 0001
 timestamp: $(date -Iseconds)
 ---
-[Session continuation] This session continues from an archived conversation.
+[Session continuation after compaction]
+
+The previous conversation exceeded the context threshold and was archived.
 Archives are at ${session}/archives/ (most recent: ${ts}).
-Use subagents to search archive messages if you need history or context.
-Resume the task in progress.
+
+Do not continue the prior task from memory or guesswork. Your first action MUST be archive recovery using subagents.
+
+Required recovery protocol:
+1. Spawn one or more subagents to inspect the archived messages under ${session}/archives/${ts}/messages/.
+2. Have the subagents produce an ultra-slim recovery summary plus an index of the most important archived regions.
+3. The index must include citations to specific archive message files, and line ranges when useful, so you can tendril back into the archive for details instead of relying on a lossy summary.
+4. Recover at minimum: active objective, active skill/workflow in progress, whether any skill must be reinvoked to continue cleanly, completed steps, pending next action, relevant files/tickets/commands, blockers or failures, and decisions already made.
+5. If an active skill was in progress, reinvoke/load that skill before resuming its workflow, then follow its instructions from the recovered state.
+6. Write the recovered state to ${session}/notes/post-compaction-recovery.md.
+
+Only after that recovery note exists should you resume the task. Use additional subagent archive queries whenever the summary is insufficient.
 EOF
 
 # Signal reassembly — the assemble pipeline will re-run with fresh messages

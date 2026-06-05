@@ -44,9 +44,9 @@ assert_file_exists "${HARNESS_SESSION}/archives/${archive_ts}/messages/0002-assi
 
 # Fresh messages dir should have continuation message
 assert_file_exists "${msg_dir}/0001-user.md"
-assert_file_contains "${msg_dir}/0001-user.md" "[Session continuation]"
+assert_file_contains "${msg_dir}/0001-user.md" "[Session continuation after compaction]"
 assert_file_contains "${msg_dir}/0001-user.md" "archives/"
-assert_file_contains "${msg_dir}/0001-user.md" "Resume the task in progress"
+assert_file_contains "${msg_dir}/0001-user.md" "archive recovery using subagents"
 
 # Only one message in the fresh dir
 fresh_count="$(ls -1 "${msg_dir}"/*.md | wc -l)"

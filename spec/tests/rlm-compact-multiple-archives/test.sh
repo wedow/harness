@@ -54,4 +54,4 @@ done
 # Fresh messages dir should have only the latest continuation
 fresh_count="$(ls -1 "${msg_dir}"/*.md | wc -l)"
 assert_eq "one continuation message" "${fresh_count// /}" "1"
-assert_file_contains "${msg_dir}/0001-user.md" "[Session continuation]"
+assert_file_contains "${msg_dir}/0001-user.md" "[Session continuation after compaction]"

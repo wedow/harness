@@ -1,0 +1,62 @@
+#!/usr/bin/env bash
+# stream — run agent with live terminal output (no REPL input).
+# Used by tmux subagent panes to show real-time progress.
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "run agent with live streaming output"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+source "${HARNESS_ROOT}/plugins/core/lib/stream-renderer.sh"
+
+# --- Provider resolution ---
+_refresh_sources
+_resolve="$(jq -n --arg p "${HARNESS_PROVIDER}" --arg m "${HARNESS_MODEL}" \
+  '{provider: $p, model: $m}' | call resolve)" || {
+  _err="$(echo "${_resolve}" | jq -r '.error // empty' 2>/dev/null)" || true
+  _die "${_err:-provider resolution failed}"
+}
+HARNESS_PROVIDER="$(echo "${_resolve}" | jq -r '.provider // empty')"
+HARNESS_MODEL="$(echo "${_resolve}" | jq -r '.model // empty')"
+export HARNESS_PROVIDER HARNESS_MODEL
+
+# --- Session setup ---
+session_dir=""
+if [[ -n "${1:-}" && -d "${HARNESS_SESSIONS}/${1}" ]]; then
+  session_dir="${HARNESS_SESSIONS}/${1}"
+  shift
+fi
+
+if (( $# > 0 )); then
+  message="$*"
+elif [[ ! -t 0 ]]; then
+  message="$(cat)"
+fi
+
+if [[ -z "${session_dir}" ]]; then
+  session_dir="$(_new_session)"
+fi
+export SESSION_DIR="${session_dir}" HARNESS_SESSION="${session_dir}"
+
+# Print session info to the pane so user can see it
+echo "session: $(basename "${session_dir}")"
+[[ -n "${HARNESS_PROVIDER}" ]] && echo "provider: ${HARNESS_PROVIDER}"
+[[ -n "${HARNESS_MODEL}" ]] && echo "model: ${HARNESS_MODEL}"
+
+[[ -n "${message}" ]] && _save_message "${session_dir}" "${message}"
+
+# --- Stream renderer sourced from lib/stream-renderer.sh ---
+
+# --- Run agent_loop in background, render stream in foreground ---
+export HARNESS_LOG="${session_dir}/stream.log"
+> "${session_dir}/.stream"
+
+set -m
+agent_loop "${session_dir}" >/dev/null &
+agent_pid=$!
+set +m
+
+_render_stream "${session_dir}/.stream" "${agent_pid}"
+wait "${agent_pid}" 2>/dev/null || true
+
+echo ""  # trailing newline before pane closes

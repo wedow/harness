@@ -49,16 +49,83 @@ JSON
       env_args+=(HARNESS_PARENT_SESSION="${HARNESS_SESSION##*/}")
     fi
 
-    # Run subagent — stdout is the final output, stderr has session info/logs
     workdir="${HARNESS_CWD:-${PWD}}"
-    result="$(cd "${workdir}" && env "${env_args[@]+"${env_args[@]}"}" "${HARNESS_ROOT}/bin/harness" run "${prompt}" 2>/dev/null)" || true
 
-    if [[ -z "${result}" ]]; then
-      echo "subagent completed with no output"
+    # --- tmux: spawn subagent in a sibling pane ---
+    if [[ -n "${TMUX:-}" && -n "${HARNESS_SESSION:-}" ]]; then
+      # Resolve nested sessions dir
+      sessions_dir="${HARNESS_SESSION}/.harness/sessions"
+
+      # Create subagent session dir upfront so we can read results
+      session_id="$(date +%Y%m%d-%H%M%S)-$$"
+      session_dir="${sessions_dir}/${session_id}"
+      mkdir -p "${session_dir}/messages"
+      cat > "${session_dir}/session.conf" <<CONF
+id=${session_id}
+model=${model:-${HARNESS_MODEL:-}}
+provider=${provider:-${HARNESS_PROVIDER:-}}
+created=$(date -Iseconds)
+cwd=${workdir}
+parent=${HARNESS_SESSION##*/}
+CONF
+
+      # Save user message (frontmatter + prompt)
+      seq="0001"
+      {
+        cat <<HEADER
+---
+role: user
+seq: ${seq}
+timestamp: $(date -Iseconds)
+---
+HEADER
+        printf '%s' "${prompt}"
+      } > "${session_dir}/messages/${seq}-user.md"
+
+      # Build a shell-safe command for the tmux pane.
+      printf -v q_workdir %q "${workdir}"
+      printf -v q_sessions_dir %q "${sessions_dir}"
+      printf -v q_parent_session %q "${HARNESS_SESSION##*/}"
+      printf -v q_session_dir %q "${session_dir}"
+      printf -v q_harness %q "${HARNESS_ROOT}/bin/harness"
+      printf -v q_session_id %q "${session_id}"
+      env_export="HARNESS_SESSIONS=${q_sessions_dir}"
+      env_export+=" HARNESS_PARENT_SESSION=${q_parent_session}"
+      env_export+=" HARNESS_SESSION=${q_session_dir}"
+      if [[ -n "${model}" ]]; then printf -v q_model %q "${model}"; env_export+=" HARNESS_MODEL=${q_model}"; fi
+      if [[ -n "${provider}" ]]; then printf -v q_provider %q "${provider}"; env_export+=" HARNESS_PROVIDER=${q_provider}"; fi
+
+      pane_cmd="cd ${q_workdir} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null"
+      # Spawn in a new pane, wait for it to finish
+      pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}")"
+      while tmux list-panes -t "${pane_id}" &>/dev/null; do sleep 0.2; done
+
+      # Read the last assistant message body from the session
+      # Strip frontmatter and thinking blocks to match original output format
+      last_asst="$(find "${session_dir}/messages" -maxdepth 1 -type f -name '*-assistant.md' -printf '%f\n' 2>/dev/null | sort -n | tail -1)"
+      if [[ -n "${last_asst}" ]]; then
+        result="$(awk 'BEGIN{f=0} /^---/{f++; next} f>=2' "${session_dir}/messages/${last_asst}" | sed '1{/^$/d}' | awk '/^```thinking/{skip=1; next} skip && /^```$/{skip=0; next} !skip')"
+      else
+        result=""
+      fi
+
+      if [[ -z "${result}" ]]; then
+        echo "subagent completed with no output"
+      else
+        echo "${result}"
+      fi
     else
-      echo "${result}"
+      # --- no tmux: run inline (original behavior) ---
+      result="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" run "${prompt}" 2>/dev/null)" || true
+
+      if [[ -z "${result}" ]]; then
+        echo "subagent completed with no output"
+      else
+        echo "${result}"
+      fi
     fi
     ;;
+
   *)
     echo "usage: agent --schema | --describe | --exec" >&2
     exit 1

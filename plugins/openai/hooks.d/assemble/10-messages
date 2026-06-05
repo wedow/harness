@@ -18,6 +18,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
   _role=""
   _call_id=""
   _error="false"
+  _stop=""
   in_fm=false
   fm_done=false
   body=""
@@ -31,6 +32,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
         role:*)     _role="${line#role: }" ;;
         call_id:*)  _call_id="${line#call_id: }" ;;
         error:*)    _error="${line#error: }" ;;
+        stop:*)     _stop="${line#stop: }" ;;
       esac
     else
       body+="${line}"$'\n'
@@ -50,7 +52,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
       tool_id="" tool_name="" tool_body=""
 
       while IFS= read -r line; do
-        if [[ "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
+        if [[ ( "${_stop}" == "tool_calls" || -z "${_stop}" ) && "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
           in_tool_block=true
           tool_id="${BASH_REMATCH[1]}"
           tool_name="${BASH_REMATCH[2]}"

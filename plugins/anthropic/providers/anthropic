@@ -64,6 +64,12 @@ request="$(echo "${messages}" | jq -c \
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 
+# Optional sampling params (set by variant conf via the send hook). Added only
+# when present so the real Anthropic API never receives unexpected fields.
+[[ -n "${ANTHROPIC_TEMPERATURE:-}" ]] && request="$(echo "${request}" | jq -c --argjson v "${ANTHROPIC_TEMPERATURE}" '. + {temperature: $v}')"
+[[ -n "${ANTHROPIC_TOP_P:-}" ]] && request="$(echo "${request}" | jq -c --argjson v "${ANTHROPIC_TOP_P}" '. + {top_p: $v}')"
+[[ -n "${ANTHROPIC_TOP_K:-}" ]] && request="$(echo "${request}" | jq -c --argjson v "${ANTHROPIC_TOP_K}" '. + {top_k: $v}')"
+
 # Automatic prompt caching (Anthropic-only — third-party endpoints reject unknown fields)
 if [[ "${ANTHROPIC_API_URL}" == "https://api.anthropic.com/"* ]]; then
   request="$(echo "${request}" | jq -c '. + {cache_control: {type: "ephemeral"}}')"

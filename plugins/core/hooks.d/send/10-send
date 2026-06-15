@@ -40,11 +40,17 @@ if [[ -z "${provider_bin}" ]]; then
     url="$(grep '^url=' "${conf}" | head -1 | cut -d= -f2-)"
     auth_env="$(grep '^auth_env=' "${conf}" | head -1 | cut -d= -f2-)"
     max_tokens="$(grep '^max_tokens=' "${conf}" | head -1 | cut -d= -f2- || true)"
+    temperature="$(grep '^temperature=' "${conf}" | head -1 | cut -d= -f2- || true)"
+    top_p="$(grep '^top_p=' "${conf}" | head -1 | cut -d= -f2- || true)"
+    top_k="$(grep '^top_k=' "${conf}" | head -1 | cut -d= -f2- || true)"
     provider_bin="$(_find_bin "${protocol}")"
     # Map variant config to protocol env vars
     proto_upper="$(echo "${protocol}" | tr '[:lower:]' '[:upper:]')"
     [[ -n "${url}" ]] && export "${proto_upper}_API_URL=${url}"
     [[ -n "${max_tokens}" ]] && export "${proto_upper}_MAX_TOKENS=${max_tokens}"
+    [[ -n "${temperature}" ]] && export "${proto_upper}_TEMPERATURE=${temperature}"
+    [[ -n "${top_p}" ]] && export "${proto_upper}_TOP_P=${top_p}"
+    [[ -n "${top_k}" ]] && export "${proto_upper}_TOP_K=${top_k}"
     key=""
     [[ -n "${auth_env}" ]] && key="${!auth_env:-}"
     if [[ -z "${key}" ]]; then

@@ -98,8 +98,6 @@ if [[ -n "${stream_flag}" ]]; then
 
   _workdir="$(sed -n 's/^cwd=//p' "${HARNESS_SESSION}/session.conf" 2>/dev/null)"
   _workdir="${_workdir:-${PWD}}"
-  _tool_path="$(sed -n 's/^HARNESS_TOOL_PATH=//p' "${HARNESS_SESSION}/session.conf" 2>/dev/null)"
-  [[ -n "${_tool_path}" ]] && export HARNESS_TOOL_PATH="${_tool_path}"
 
   mkfifo "${dispatch_dir}/.fifo"
 

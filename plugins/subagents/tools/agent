@@ -96,8 +96,11 @@ HEADER
       if [[ -n "${provider}" ]]; then printf -v q_provider %q "${provider}"; env_export+=" HARNESS_PROVIDER=${q_provider}"; fi
 
       pane_cmd="cd ${q_workdir} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null"
-      # Spawn in a new pane, wait for it to finish
-      pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}")"
+      # Spawn in a new pane; spill to a new window if this one is too full to
+      # split, then retile into an even grid so panes don't squish to death.
+      pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}" 2>/dev/null)" \
+        || pane_id="$(tmux new-window -P -F '#{pane_id}' "${pane_cmd}")"
+      tmux select-layout -t "${pane_id}" tiled >/dev/null 2>&1 || true
       while tmux list-panes -t "${pane_id}" &>/dev/null; do sleep 0.2; done
 
       # Read the last assistant message body from the session

@@ -2,6 +2,17 @@
 # agent — tool plugin: spawn a subagent to handle a task autonomously.
 set -euo pipefail
 
+# _schema_error CAND SCHEMA — exit 0 (silent) if CAND is a JSON object whose
+# keys include every entry in SCHEMA.required; else print why and exit 1.
+_schema_error() {
+  local cand="$1" schema="$2" missing
+  printf '%s' "${cand}" | jq -e 'type == "object"' >/dev/null 2>&1 \
+    || { echo "not a JSON object"; return 1; }
+  missing="$(printf '%s' "${cand}" | jq -c --argjson s "${schema}" '($s.required // []) - keys')" \
+    || { echo "invalid JSON"; return 1; }
+  [[ "${missing}" == "[]" ]] || { echo "missing required keys ${missing}"; return 1; }
+}
+
 case "${1:-}" in
   --schema)
     cat <<'JSON'
@@ -22,6 +33,10 @@ case "${1:-}" in
       "provider": {
         "type": "string",
         "description": "Provider override (optional, defaults to parent's provider)"
+      },
+      "schema": {
+        "type": "object",
+        "description": "Optional JSON Schema. When set, the subagent is told to return only a JSON object matching it; the tool extracts that object (stripping any code fence), checks every required key is present, retries on mismatch, and returns compact validated JSON instead of prose."
       }
     },
     "required": ["prompt"]
@@ -37,6 +52,7 @@ JSON
     prompt="$(echo "${input}" | jq -r '.prompt')"
     model="$(echo "${input}" | jq -r '.model // empty')"
     provider="$(echo "${input}" | jq -r '.provider // empty')"
+    schema="$(echo "${input}" | jq -c '.schema // empty')"
 
     # Build env overrides
     env_args=()
@@ -51,8 +67,24 @@ JSON
 
     workdir="${HARNESS_CWD:-${PWD}}"
 
+    if [[ -n "${schema}" ]]; then
+      # --- structured-output mode (headless): instruct the subagent to emit raw
+      # JSON, extract it, check required keys, retry on mismatch, emit compact. ---
+      instr=$'\n\n'"Return ONLY a single JSON object that satisfies this JSON Schema. Output raw JSON with no prose and no code fence:"$'\n'"${schema}"
+      ask="${prompt}${instr}"; result=""; raw=""; tries=0
+      while (( tries++ < "${HARNESS_AGENT_SCHEMA_RETRIES:-3}" )); do
+        raw="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" run "${ask}" 2>/dev/null)" || true
+        cand="$(printf '%s' "${raw}" | sed -n '/^```/,/^```/{/^```/d;p;}')"
+        [[ -n "${cand}" ]] || cand="${raw}"
+        if err="$(_schema_error "${cand}" "${schema}")"; then
+          result="$(printf '%s' "${cand}" | jq -c .)"; break
+        fi
+        ask="${prompt}${instr}"$'\n\n'"Your previous reply was invalid (${err}). Return ONLY the JSON object, nothing else."
+      done
+      printf '%s\n' "${result:-${raw:-subagent completed with no output}}"
+
     # --- tmux: spawn subagent in a sibling pane ---
-    if [[ -n "${TMUX:-}" && -n "${HARNESS_SESSION:-}" ]]; then
+    elif [[ -n "${TMUX:-}" && -n "${HARNESS_SESSION:-}" ]]; then
       # Resolve nested sessions dir
       sessions_dir="${HARNESS_SESSION}/.harness/sessions"
 

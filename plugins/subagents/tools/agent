@@ -73,7 +73,7 @@ JSON
       instr=$'\n\n'"Return ONLY a single JSON object that satisfies this JSON Schema. Output raw JSON with no prose and no code fence:"$'\n'"${schema}"
       ask="${prompt}${instr}"; result=""; raw=""; tries=0
       while (( tries++ < "${HARNESS_AGENT_SCHEMA_RETRIES:-3}" )); do
-        raw="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" run "${ask}" 2>/dev/null)" || true
+        raw="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${ask}" 2>/dev/null)" || true
         cand="$(printf '%s' "${raw}" | sed -n '/^```/,/^```/{/^```/d;p;}')"
         [[ -n "${cand}" ]] || cand="${raw}"
         if err="$(_schema_error "${cand}" "${schema}")"; then
@@ -151,7 +151,7 @@ HEADER
       fi
     else
       # --- no tmux: run inline (original behavior) ---
-      result="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" run "${prompt}" 2>/dev/null)" || true
+      result="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${prompt}" 2>/dev/null)" || true
 
       if [[ -z "${result}" ]]; then
         echo "subagent completed with no output"

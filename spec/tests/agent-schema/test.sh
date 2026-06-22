@@ -15,9 +15,10 @@ export HARNESS_CWD="${_tmpdir}/work"; mkdir -p "${HARNESS_CWD}"
 
 # ---------- Phase A: invalid-then-valid, fenced, with leading prose ----------
 fakeA="${_tmpdir}/fakeA"; mkdir -p "${fakeA}/bin"
-export CALLS_FILE="${_tmpdir}/callsA" PROMPTS_LOG="${_tmpdir}/promptsA"
+export CALLS_FILE="${_tmpdir}/callsA" PROMPTS_LOG="${_tmpdir}/promptsA" SUBCMD_FILE="${_tmpdir}/subcmdA"
 cat > "${fakeA}/bin/harness" <<'STUB'
 #!/usr/bin/env bash
+echo "$1" > "${SUBCMD_FILE}"     # the dispatched subcommand ($2 is the prompt)
 prompt="$2"
 n=$(( $(cat "${CALLS_FILE}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${CALLS_FILE}"
 printf '%s\n====\n' "$prompt" >> "${PROMPTS_LOG}"
@@ -36,6 +37,7 @@ assert_eq "validated compact json" "${out}" '{"foo":1,"bar":2}'
 assert_eq "retried once (2 calls)" "$(cat "${CALLS_FILE}")" "2"
 assert_file_contains "${PROMPTS_LOG}" "JSON Schema"               # instruction injected
 assert_file_contains "${PROMPTS_LOG}" "previous reply was invalid" # retry feedback fed back
+assert_eq "schema branch dispatches the agent subcommand (not 'run')" "$(cat "${SUBCMD_FILE}")" "agent"
 
 # ---------- Phase B: valid on first try -> no needless retry ----------
 fakeB="${_tmpdir}/fakeB"; mkdir -p "${fakeB}/bin"
@@ -53,13 +55,16 @@ assert_eq "no needless retry (1 call)" "$(cat "${CALLS_FILE}")" "1"
 
 # ---------- Phase C: no schema -> unchanged prose passthrough ----------
 fakeC="${_tmpdir}/fakeC"; mkdir -p "${fakeC}/bin"
+export SUBCMD_FILE="${_tmpdir}/subcmdC"
 cat > "${fakeC}/bin/harness" <<'STUB'
 #!/usr/bin/env bash
+echo "$1" > "${SUBCMD_FILE}"
 printf 'a plain free-form answer\n'
 STUB
 chmod +x "${fakeC}/bin/harness"
 out="$(echo '{"prompt":"hello"}' | HARNESS_ROOT="${fakeC}" "${agent_tool}" --exec)"
 assert_eq "no-schema passthrough" "${out}" 'a plain free-form answer'
+assert_eq "inline branch dispatches the agent subcommand (not 'run')" "$(cat "${SUBCMD_FILE}")" "agent"
 
 # ---------- schema field advertised in --schema ----------
 assert_json '.input_schema.properties.schema.type' "$("${agent_tool}" --schema)" "object"

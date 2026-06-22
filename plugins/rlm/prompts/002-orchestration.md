@@ -33,7 +33,7 @@ wait
 
 ### Map-reduce / judge
 
-`agent` returns prose, so there is no structured-output channel. To get a machine-readable result, tell the subagent to end with a fenced `json` block, then strip the fences (`sed -n '/```json/,/```/p' | sed '1d;$d'`) before `jq` — piping raw `agent` output straight into `jq` fails. Map a subagent over candidates collecting structured scores, then reduce with `jq` — no extra model call for the reduction.
+`agent` returns prose, not JSON. For a single validated object, pass a `schema` to `agent --exec` — it makes the subagent emit only matching JSON, strips the fence, checks the required keys, and retries on mismatch. To collect many results in one pipeline, do that extraction by hand: have the subagent end with a fenced `json` block, then strip the fences (`sed -n '/```json/,/```/p' | sed '1d;$d'`) before `jq` (raw `agent` output piped straight to `jq` fails). Map a subagent over candidates collecting structured scores, then reduce with `jq` — no extra model call for the reduction.
 
 ```bash
 : > notes/scored.jsonl

@@ -142,6 +142,7 @@ if [[ "${streaming}" == true ]]; then
     "${auth_args[@]}" \
     -H "content-type: application/json" \
     -d @- \
+    --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
     --max-time 300
   )
 
@@ -208,10 +209,13 @@ if [[ "${streaming}" == true ]]; then
       usage: {prompt_tokens: $prompt_tokens, completion_tokens: $completion_tokens, total_tokens: $total_tokens}
     }'
 else
+  # --speed-limit 1 --speed-time 60: abort a stalled transfer in ~60s rather
+  # than the full --max-time 300. See streaming path above for rationale.
   response="$(echo "${request}" | curl -sS "${OPENAI_API_URL}" \
     "${auth_args[@]}" \
     -H "content-type: application/json" \
     -d @- \
+    --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
     --max-time 300
   )"
 

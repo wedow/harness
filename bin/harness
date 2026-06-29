@@ -79,16 +79,29 @@ call() {
 
   export HARNESS_SESSION="${SESSION_DIR:-}" HARNESS_STAGE="${stage}"
 
-  # Sort by basename (numeric prefix gives order), execute as pipeline
-  local base
+  # Sort by basename (numeric prefix gives order), execute as pipeline.
+  # Each hook's stderr is captured to a temp file (forwarded to HARNESS_LOG) so
+  # that on failure we can surface the real cause inline rather than pointing
+  # the operator at a separate log file (BUG-6).
+  local base rc stderr_tail err_msg
+  local err_tmp; err_tmp="$(mktemp)"
   while IFS= read -r base; do
-    current="$(echo "${current}" | "${hook_map[$base]}" "$@" 2>>"${HARNESS_LOG}")" || {
-      local rc=$?
+    : > "${err_tmp}"
+    rc=0
+    current="$(echo "${current}" | "${hook_map[$base]}" "$@" 2>"${err_tmp}")" || rc=$?
+    cat "${err_tmp}" >> "${HARNESS_LOG}" 2>/dev/null || true
+    if (( rc != 0 )); then
       _log "hook ${hook_map[$base]} exited ${rc} during ${stage}"
-      printf '%s' "${current}"; return ${rc}
-    }
+      stderr_tail="$(tail -n 2 "${err_tmp}" 2>/dev/null)"
+      err_msg="hook ${hook_map[$base]} exited ${rc} during ${stage}"
+      [[ -n "${stderr_tail}" ]] && err_msg="${err_msg}: ${stderr_tail}"
+      rm -f "${err_tmp}"
+      jq -c -n --arg m "${err_msg}" '{error: $m}'
+      return ${rc}
+    fi
   done < <(printf '%s\n' "${!hook_map[@]}" | sort)
 
+  rm -f "${err_tmp}"
   printf '%s' "${current}"
 }
 

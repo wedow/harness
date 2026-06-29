@@ -222,16 +222,13 @@ if [[ "${streaming}" == true ]]; then
   exit 0
 fi
 
-# Call the API
-# --speed-limit 1 --speed-time 60: abort if the transfer falls below 1 byte/sec
-# sustained over 60s. A genuinely stalled connection (zero bytes — the real
-# failure mode) aborts in ~60s instead of burning the full --max-time 300.
-# 60s of total silence does not false-trip in practice: live streams emit
-# pings/keepalives even during long reasoning pauses.
+# Call the API. No --speed-time here: a non-streaming response sends zero
+# bytes while the server computes the full body, so an inactivity timer would
+# falsely abort long-but-healthy requests (extended thinking, slow endpoints).
+# --max-time 300 remains the backstop.
 response="$(echo "${request}" | curl -sS "${ANTHROPIC_API_URL}" \
   "${_curl_headers[@]}" \
   -d @- \
-  --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
   --max-time 300
 )"
 

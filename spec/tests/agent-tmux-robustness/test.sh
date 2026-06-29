@@ -103,4 +103,61 @@ out="$(printf '{"prompt":"crash"}' | "${agent_tool}" --exec 2>&1)" || rc=$?
 [[ "${rc}" -ne 0 ]] || { echo "FAIL: tmux child failure should propagate"; exit 1; }
 [[ "${out}" == *"subagent failed (exit 99)"* ]] || { echo "FAIL: expected marked failure, got: ${out}"; exit 1; }
 
+# ---------- Phase 5: tq-02 — .exit_code happy path (marker=0 + real message) ----------
+# Regression guard: a pane that wrote .exit_code=0 AND a real assistant message
+# must surface the message body and exit 0 (catches "marker present -> always fail").
+cat > "${fakebin}/tmux" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  split-window)
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    if [[ -n "${sess_dir}" ]]; then
+      echo "0" > "${sess_dir}/.exit_code"
+      mkdir -p "${sess_dir}/messages"
+      cat > "${sess_dir}/messages/0001-assistant.md" <<'MSG'
+---
+role: assistant
+seq: 0001
+timestamp: 2024-01-01T00:00:00
+---
+phase5-happy-path-body
+MSG
+    fi
+    echo '%pane1'
+    ;;
+  list-panes) exit 1 ;;
+  *) exit 0 ;;
+esac
+FAKE
+chmod +x "${fakebin}/tmux"
+
+rc=0
+out="$(printf '{"prompt":"ok"}' | "${agent_tool}" --exec 2>&1)" || rc=$?
+[[ "${rc}" -eq 0 ]] || { echo "FAIL: Phase 5 happy path should exit 0, got rc=${rc}: ${out}"; exit 1; }
+[[ "${out}" == *"phase5-happy-path-body"* ]] || { echo "FAIL: Phase 5 expected message body, got: ${out}"; exit 1; }
+
+# ---------- Phase 6: reg-04 — external pane kill is not a silent success ----------
+# Fake tmux where the pane touches .started but never writes .exit_code (killed
+# externally before harness returned). No assistant message exists. The agent
+# tool must surface "closed unexpectedly" and exit non-zero — NOT fall through
+# to "completed with no output" (the BUG-1 silent-failure mode).
+cat > "${fakebin}/tmux" <<'FAKE'
+#!/usr/bin/env bash
+case "$1" in
+  split-window)
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    [[ -n "${sess_dir}" ]] && touch "${sess_dir}/.started"
+    echo '%pane1'
+    ;;
+  list-panes) exit 1 ;;
+  *) exit 0 ;;
+esac
+FAKE
+chmod +x "${fakebin}/tmux"
+
+rc=0
+out="$(printf '{"prompt":"kill"}' | "${agent_tool}" --exec 2>&1)" || rc=$?
+[[ "${rc}" -ne 0 ]] || { echo "FAIL: Phase 6 externally-killed pane should exit non-zero, got rc=0: ${out}"; exit 1; }
+[[ "${out}" == *"closed unexpectedly"* ]] || { echo "FAIL: Phase 6 expected 'closed unexpectedly', got: ${out}"; exit 1; }
+
 echo "PASS"

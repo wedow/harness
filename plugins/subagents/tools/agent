@@ -148,6 +148,7 @@ HEADER
       printf -v q_harness %q "${HARNESS_ROOT}/bin/harness"
       printf -v q_session_id %q "${session_id}"
       printf -v q_exit_code_file %q "${session_dir}/.exit_code"
+      printf -v q_started_file %q "${session_dir}/.started"
       # Always export provider/model so the fresh tmux shell inherits the
       # parent's resolve stage (inline/schema branches get this for free).
       printf -v q_model %q "${model:-${HARNESS_MODEL:-}}"
@@ -158,9 +159,11 @@ HEADER
       env_export+=" HARNESS_MODEL=${q_model}"
       env_export+=" HARNESS_PROVIDER=${q_provider}"
 
-      # The pane writes harness stream's exit code to .exit_code so the parent
-      # can detect a crashed subagent (no other signal available in tmux mode).
-      pane_cmd="cd ${q_workdir} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null; printf '%s' \$? > ${q_exit_code_file}"
+      # The pane touches .started before running harness, then writes harness
+      # stream's exit code to .exit_code on return. The pair lets the parent
+      # distinguish "pane ran but was killed externally" (started, no exit_code)
+      # from "pane never ran" (test fakes that capture the cmd without running).
+      pane_cmd="cd ${q_workdir} && touch ${q_started_file} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null; printf '%s' \$? > ${q_exit_code_file}"
       # Spawn in a new pane; spill to a new window if this one is too full to
       # split, then retile into an even grid so panes don't squish to death.
       pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}" 2>/dev/null)" \
@@ -177,6 +180,15 @@ HEADER
         fi
         sleep 0.2
       done
+
+      # Pane started but was killed externally (user closed it, OOM, kill -9,
+      # tmux restart) before harness could return and write .exit_code. Without
+      # this check the fall-through emits "completed with no output" exit 0 —
+      # the BUG-1 silent-failure mode.
+      if [[ ! -f "${session_dir}/.exit_code" && -f "${session_dir}/.started" ]]; then
+        echo "subagent pane closed unexpectedly (no exit marker)"
+        exit 1
+      fi
 
       # If the pane wrote a non-zero exit code, surface it (BUG-1 for tmux).
       if [[ -f "${session_dir}/.exit_code" ]]; then

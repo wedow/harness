@@ -77,12 +77,17 @@ fi
 echo "${_display}" >> "${HARNESS_LOG}" 2>/dev/null || true
 [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${_display}" '{type:"tool_output",text:$t}')" >> "${HARNESS_SESSION}/.stream" || true
 
-# Return result JSON with remaining tool calls
+# Return result JSON with remaining tool calls.
+# Large fields (result/input/tool_calls) are fed via --rawfile on process
+# substitutions (printf is a bash builtin, so the value never hits exec
+# ARG_MAX) instead of --arg/--argjson CLI args, which crash with
+# "Argument list too long" on multi-MB tool output. --rawfile yields a JSON
+# string; JSON-typed fields are parsed back with fromjson.
 jq -n \
   --arg call_id "${call_id}" \
   --arg name "${tool_name}" \
-  --argjson input "${input}" \
-  --arg result "${result}" \
   --argjson error "${error}" \
-  --argjson tool_calls "${remaining}" \
-  '{call_id: $call_id, name: $name, input: $input, result: $result, error: $error, tool_calls: $tool_calls, next_state: "tool_done"}'
+  --rawfile result <(printf '%s' "${result}") \
+  --rawfile input <(printf '%s' "${input}") \
+  --rawfile tool_calls <(printf '%s' "${remaining}") \
+  '{call_id: $call_id, name: $name, input: ($input|fromjson), result: $result, error: $error, tool_calls: ($tool_calls|fromjson), next_state: "tool_done"}'

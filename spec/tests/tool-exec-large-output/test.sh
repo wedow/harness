@@ -29,6 +29,8 @@ assert_json '.call_id'    "$out" "call_big"
 assert_json '.name'       "$out" "big_tool"
 assert_json '.error'      "$out" "false"
 assert_json '.next_state' "$out" "tool_done"
+# input must be parsed back to an object (fromjson), not left as a JSON string.
+assert_json '.input | type' "$out" "object"
 
 expected=$(( $(getconf ARG_MAX) + 1024 ))
 actual="$(printf '%s' "$out" | jq '.result | length')"

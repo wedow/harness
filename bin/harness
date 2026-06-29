@@ -96,7 +96,9 @@ call() {
       err_msg="hook ${hook_map[$base]} exited ${rc} during ${stage}"
       [[ -n "${stderr_tail}" ]] && err_msg="${err_msg}: ${stderr_tail}"
       rm -f "${err_tmp}"
-      jq -c -n --arg m "${err_msg}" '{error: $m}'
+      # --rawfile on a process substitution (printf is a builtin) so a hook
+      # whose last stderr line exceeds MAX_ARG_STRLEN can't defeat this surfacing.
+      jq -c -n --rawfile m <(printf '%s' "${err_msg}") '{error: $m}'
       return ${rc}
     fi
   done < <(printf '%s\n' "${!hook_map[@]}" | sort)

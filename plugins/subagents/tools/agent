@@ -13,6 +13,31 @@ _schema_error() {
   [[ "${missing}" == "[]" ]] || { echo "missing required keys ${missing}"; return 1; }
 }
 
+# _run_child_or_fail ASK — run the subagent (cd workdir, env overrides,
+# HARNESS_AGENT_TIMEOUT wall-clock cap, stderr captured rather than discarded).
+# On a hard failure (non-zero child exit, timeout, or no usable output) prints
+# a marked error and exits non-zero so tool_exec flags error:true. Otherwise
+# leaves the child's stdout in _child_out for the caller to use.
+_run_child_or_fail() {
+  local ask="$1" err_file last_err
+  err_file="$(mktemp)"
+  _child_exit=0
+  _child_out="$(cd "${workdir}" && timeout "${HARNESS_AGENT_TIMEOUT:-600}" \
+    env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${ask}" \
+    2>"${err_file}")" || _child_exit=$?
+  _child_err="$(cat "${err_file}")"
+  rm -f "${err_file}"
+  if [[ "${_child_exit}" -ne 0 || -z "${_child_out}" ]]; then
+    last_err="$(printf '%s\n' "${_child_err}" | tail -1)"
+    if [[ "${_child_exit}" -eq 124 ]]; then
+      printf 'subagent timed out after %ss: %s\n' "${HARNESS_AGENT_TIMEOUT:-600}" "${last_err}"
+    else
+      printf 'subagent failed (exit %d): %s\n' "${_child_exit}" "${last_err}"
+    fi
+    exit 1
+  fi
+}
+
 case "${1:-}" in
   --schema)
     cat <<'JSON'
@@ -73,7 +98,8 @@ JSON
       instr=$'\n\n'"Return ONLY a single JSON object that satisfies this JSON Schema. Output raw JSON with no prose and no code fence:"$'\n'"${schema}"
       ask="${prompt}${instr}"; result=""; raw=""; tries=0
       while (( tries++ < "${HARNESS_AGENT_SCHEMA_RETRIES:-3}" )); do
-        raw="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${ask}" 2>/dev/null)" || true
+        _run_child_or_fail "${ask}"
+        raw="${_child_out}"
         cand="$(printf '%s' "${raw}" | sed -n '/^```/,/^```/{/^```/d;p;}')"
         [[ -n "${cand}" ]] || cand="${raw}"
         if err="$(_schema_error "${cand}" "${schema}")"; then
@@ -121,19 +147,45 @@ HEADER
       printf -v q_session_dir %q "${session_dir}"
       printf -v q_harness %q "${HARNESS_ROOT}/bin/harness"
       printf -v q_session_id %q "${session_id}"
+      printf -v q_exit_code_file %q "${session_dir}/.exit_code"
+      # Always export provider/model so the fresh tmux shell inherits the
+      # parent's resolve stage (inline/schema branches get this for free).
+      printf -v q_model %q "${model:-${HARNESS_MODEL:-}}"
+      printf -v q_provider %q "${provider:-${HARNESS_PROVIDER:-}}"
       env_export="HARNESS_SESSIONS=${q_sessions_dir}"
       env_export+=" HARNESS_PARENT_SESSION=${q_parent_session}"
       env_export+=" HARNESS_SESSION=${q_session_dir}"
-      if [[ -n "${model}" ]]; then printf -v q_model %q "${model}"; env_export+=" HARNESS_MODEL=${q_model}"; fi
-      if [[ -n "${provider}" ]]; then printf -v q_provider %q "${provider}"; env_export+=" HARNESS_PROVIDER=${q_provider}"; fi
+      env_export+=" HARNESS_MODEL=${q_model}"
+      env_export+=" HARNESS_PROVIDER=${q_provider}"
 
-      pane_cmd="cd ${q_workdir} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null"
+      # The pane writes harness stream's exit code to .exit_code so the parent
+      # can detect a crashed subagent (no other signal available in tmux mode).
+      pane_cmd="cd ${q_workdir} && ${env_export} ${q_harness} stream ${q_session_id} < /dev/null; printf '%s' \$? > ${q_exit_code_file}"
       # Spawn in a new pane; spill to a new window if this one is too full to
       # split, then retile into an even grid so panes don't squish to death.
       pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}" 2>/dev/null)" \
         || pane_id="$(tmux new-window -P -F '#{pane_id}' "${pane_cmd}")"
       tmux select-layout -t "${pane_id}" tiled >/dev/null 2>&1 || true
-      while tmux list-panes -t "${pane_id}" &>/dev/null; do sleep 0.2; done
+      # Bound the pane-poll loop by the wall-clock timeout; kill the pane on
+      # expiry so a hung subagent doesn't block the parent until manually killed.
+      deadline=$(( $(date +%s) + ${HARNESS_AGENT_TIMEOUT:-600} ))
+      while tmux list-panes -t "${pane_id}" &>/dev/null; do
+        if (( $(date +%s) >= deadline )); then
+          tmux kill-pane -t "${pane_id}" 2>/dev/null || true
+          echo "subagent timed out after ${HARNESS_AGENT_TIMEOUT:-600}s"
+          exit 1
+        fi
+        sleep 0.2
+      done
+
+      # If the pane wrote a non-zero exit code, surface it (BUG-1 for tmux).
+      if [[ -f "${session_dir}/.exit_code" ]]; then
+        child_exit="$(cat "${session_dir}/.exit_code")"
+        if [[ "${child_exit}" != "0" ]]; then
+          echo "subagent failed (exit ${child_exit:-unknown})"
+          exit 1
+        fi
+      fi
 
       # Read the last assistant message body from the session
       # Strip frontmatter and thinking blocks to match original output format
@@ -151,13 +203,8 @@ HEADER
       fi
     else
       # --- no tmux: run inline (original behavior) ---
-      result="$(cd "${workdir}" && env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${prompt}" 2>/dev/null)" || true
-
-      if [[ -z "${result}" ]]; then
-        echo "subagent completed with no output"
-      else
-        echo "${result}"
-      fi
+      _run_child_or_fail "${prompt}"
+      echo "${_child_out}"
     fi
     ;;
 

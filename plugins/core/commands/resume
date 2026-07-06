@@ -12,4 +12,5 @@ _refresh_sources
 id="$(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -1)"
 [[ -n "${id}" ]] || _die "no sessions found"
 
+export HARNESS_PRINT_HISTORY=1
 exec "$( _find_command repl )" "${id}" "$@"

@@ -46,12 +46,59 @@ _render_history() {
       tool = ""
       body = ""
       preview = ""
+      in_tool_call = 0
+      tool_name = ""
+      tool_json = ""
       body_lines = 0
       skipped_blank = 0
       frontmatter = 0
     }
 
+    function json_string_value(json, key,  marker, start, i, c, escaped, value) {
+      marker = "\"" key "\":\""
+      start = index(json, marker)
+      if (!start) return ""
+      i = start + length(marker)
+      escaped = 0
+      value = ""
+      while (i <= length(json)) {
+        c = substr(json, i, 1)
+        if (escaped) {
+          if (c == "n") value = value "\n"
+          else if (c == "t") value = value "\t"
+          else value = value c
+          escaped = 0
+        } else if (c == "\\") {
+          escaped = 1
+        } else if (c == "\"") {
+          return value
+        } else {
+          value = value c
+        }
+        i++
+      }
+      return value
+    }
+
+    function append_body(line) {
+      body_lines++
+      body = body line "\n"
+      if (role == "tool_result" && body_lines <= 10) preview = preview line "\n"
+    }
+
+    function append_tool_call(  command, display_json) {
+      if (tool_name == "bash") {
+        command = json_string_value(tool_json, "command")
+        append_body("\033[90m[tool: " tool_name "]\033[0m " command)
+      } else {
+        display_json = tool_json
+        sub(/\n+$/, "", display_json)
+        append_body("\033[90m[tool: " tool_name "]\033[0m " display_json)
+      }
+    }
+
     function emit_msg(  label, visible, omitted, out) {
+      if (in_tool_call) append_tool_call()
       if (body_lines == 0) return
 
       if (role == "user") label = "You"
@@ -95,9 +142,25 @@ _render_history() {
 
     {
       skipped_blank = 1
-      body_lines++
-      body = body $0 "\n"
-      if (role == "tool_result" && body_lines <= 10) preview = preview $0 "\n"
+      if (role == "assistant" && in_tool_call && $0 == "```") {
+        append_tool_call()
+        in_tool_call = 0
+        tool_name = ""
+        tool_json = ""
+        next
+      }
+      if (role == "assistant" && in_tool_call) {
+        tool_json = tool_json $0 "\n"
+        next
+      }
+      if (role == "assistant" && $0 ~ /^```tool_call /) {
+        in_tool_call = 1
+        tool_name = $0
+        sub(/^.* name=/, "", tool_name)
+        sub(/ .*$/, "", tool_name)
+        next
+      }
+      append_body($0)
     }
 
     END { emit_msg() }

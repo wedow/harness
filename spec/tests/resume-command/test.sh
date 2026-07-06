@@ -39,6 +39,10 @@ seq: 0002
 timestamp: 2024-01-01T01:02:00Z
 ---
 previous answer
+
+```tool_call id=call_123 name=bash
+{"command":"pwd && printf '\\n--- files ---\\n'","timeout":120}
+```
 MSG
 cat > "${HARNESS_SESSIONS}/${new_id}/messages/0003-tool_result.md" <<'MSG'
 ---
@@ -81,6 +85,12 @@ esac
 
 if [[ "${output}" != *"previous question"* || "${output}" != *"previous answer"* ]]; then
   echo "FAIL: resume did not print previous history"
+  echo "${output}"
+  exit 1
+fi
+
+if [[ "${output}" != *"[tool: bash]"*"pwd && printf"* || "${output}" == *"tool_call id=call_123"* ]]; then
+  echo "FAIL: resume did not render assistant tool calls"
   echo "${output}"
   exit 1
 fi

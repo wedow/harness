@@ -36,57 +36,72 @@ echo "session: $(basename "${session_dir}")" >&2
 
 # --- Stream renderer sourced from lib/stream-renderer.sh ---
 
-_message_body() {
-  awk 'BEGIN{f=0} /^---$/ {f++; next} f>=2 {print}' "$1" | sed '1{/^$/d;}'
-}
-
-_message_body_preview() {
-  local file="$1" max_lines="$2"
-  local body line_count
-  body="$(_message_body "${file}")"
-  line_count="$(printf '%s\n' "${body}" | wc -l | tr -d ' ')"
-  printf '%s\n' "${body}" | head -n "${max_lines}"
-  if (( line_count > max_lines )); then
-    printf '[... %d lines omitted]\n' "$((line_count - max_lines))"
-  fi
-}
-
-_message_field() {
-  local file="$1" field="$2"
-  sed -n "s/^${field}: //p" "${file}" | head -1
-}
-
 _render_history() {
   local msg_dir="${session_dir}/messages"
   [[ -d "${msg_dir}" ]] || return 0
 
-  local file role label body tool
-  while IFS= read -r file; do
-    [[ -f "${file}" ]] || continue
-    role="$(_message_field "${file}" role)"
-    case "${role}" in
-      user)
-        label="You"
-        body="$(_message_body "${file}")"
-        ;;
-      assistant)
-        label="Agent"
-        body="$(_message_body "${file}")"
-        ;;
-      tool_result)
-        tool="$(_message_field "${file}" tool)"
-        label="Tool${tool:+: ${tool}}"
-        body="$(_message_body_preview "${file}" 10)"
-        ;;
-      *)
-        label="${role:-Message}"
-        body="$(_message_body "${file}")"
-        ;;
-    esac
+  find "${msg_dir}" -maxdepth 1 -type f -name '*.md' | sort | xargs -r awk '
+    function reset_msg() {
+      role = ""
+      tool = ""
+      body = ""
+      preview = ""
+      body_lines = 0
+      skipped_blank = 0
+      frontmatter = 0
+    }
 
-    [[ -n "${body}" ]] || continue
-    printf '\n\033[1;36m%s:\033[0m\n%s\n' "${label}" "${body}"
-  done < <(find "${msg_dir}" -maxdepth 1 -type f -name '*.md' | sort)
+    function emit_msg(  label, visible, omitted, out) {
+      if (body_lines == 0) return
+
+      if (role == "user") label = "You"
+      else if (role == "assistant") label = "Agent"
+      else if (role == "tool_result") label = "Tool" (tool ? ": " tool : "")
+      else label = role ? role : "Message"
+
+      printf "\n\033[1;36m%s:\033[0m\n", label
+      if (role == "tool_result") {
+        visible = body_lines < 10 ? body_lines : 10
+        printf "%s", preview
+        omitted = body_lines - visible
+        if (omitted > 0) printf "[... %d lines omitted]\n", omitted
+      } else {
+        out = body
+        sub(/\n+$/, "", out)
+        printf "%s\n", out
+      }
+    }
+
+    FNR == 1 {
+      if (NR > 1) emit_msg()
+      reset_msg()
+    }
+
+    frontmatter < 2 && $0 == "---" {
+      frontmatter++
+      next
+    }
+
+    frontmatter < 2 {
+      if ($0 ~ /^role: /) role = substr($0, 7)
+      else if ($0 ~ /^tool: /) tool = substr($0, 7)
+      next
+    }
+
+    !skipped_blank && $0 == "" {
+      skipped_blank = 1
+      next
+    }
+
+    {
+      skipped_blank = 1
+      body_lines++
+      body = body $0 "\n"
+      if (role == "tool_result" && body_lines <= 10) preview = preview $0 "\n"
+    }
+
+    END { emit_msg() }
+  '
 }
 
 if [[ "${HARNESS_PRINT_HISTORY:-}" == "1" ]]; then

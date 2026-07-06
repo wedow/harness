@@ -43,6 +43,10 @@ previous answer
 ```tool_call id=call_123 name=bash
 {"command":"pwd && printf '\\n--- files ---\\n'","timeout":120}
 ```
+
+```tool_call id=call_456 name=write_file
+{"path":"tests/test_questrade_tools.py","content":"very noisy generated test content that should not be printed in full because it represents a large generated file body rather than useful resume history"}
+```
 MSG
 cat > "${HARNESS_SESSIONS}/${new_id}/messages/0003-tool_result.md" <<'MSG'
 ---
@@ -91,6 +95,12 @@ fi
 
 if [[ "${output}" != *"[tool: bash]"*"pwd && printf"* || "${output}" == *"tool_call id=call_123"* ]]; then
   echo "FAIL: resume did not render assistant tool calls"
+  echo "${output}"
+  exit 1
+fi
+
+if [[ "${output}" != *"[tool: write_file]"*"path=tests/test_questrade_tools.py content=<"* || "${output}" == *"very noisy generated test content"* ]]; then
+  echo "FAIL: resume did not summarize large tool call arguments"
   echo "${output}"
   exit 1
 fi

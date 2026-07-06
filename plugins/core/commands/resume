@@ -9,8 +9,25 @@ esac
 source "${HARNESS_ROOT}/bin/harness"
 _refresh_sources
 
-id="$(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -1)"
-[[ -n "${id}" ]] || _die "no sessions found"
+if [[ -n "${1:-}" ]]; then
+  id="$1"
+  shift
+  [[ -d "${HARNESS_SESSIONS}/${id}" ]] || _die "session not found: ${id}"
+else
+  dir=""
+  while IFS= read -r candidate; do
+    cwd=""
+    if [[ -f "${candidate}/session.conf" ]]; then
+      cwd="$(sed -n 's/^cwd=//p' "${candidate}/session.conf" | head -1)"
+    fi
+    if [[ "${cwd}" == "${PWD}" ]]; then
+      dir="${candidate}"
+      break
+    fi
+  done < <(ls -1td "${HARNESS_SESSIONS}"/*/ 2>/dev/null || true)
+  [[ -n "${dir}" ]] || _die "no sessions found for current directory: ${PWD} (use 'harness session list' and 'harness resume <session-id>' to resume another directory's session)"
+  id="$(basename "${dir}")"
+fi
 
 export HARNESS_PRINT_HISTORY=1
 exec "$( _find_command repl )" "${id}" "$@"

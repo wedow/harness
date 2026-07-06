@@ -3,6 +3,7 @@
 set -euo pipefail
 source "${SPEC_DIR}/helpers.sh"
 setup
+export HARNESS_ROOT="$(cd "${HARNESS_ROOT}" && pwd)"
 
 export HARNESS_HOME="${_tmpdir}/home"
 export HARNESS_SESSIONS="${HARNESS_HOME}/sessions"
@@ -12,11 +13,16 @@ mkdir -p "${HARNESS_SESSIONS}"
 # to lexical (asc or desc) sort:
 #   lex-asc:  alpha-old   <  middle-new  <  zulu-mid
 #   lex-desc: zulu-mid    >  middle-new  >  alpha-old
-#   mtime:    middle-new (newest) — only this matches new_id
+#   mtime:    zulu-mid newer than middle-new, but wrong cwd
 old_a="20240101-000000-alpha-old"
 new_id="20240101-000000-middle-new"
 old_z="20240101-000000-zulu-mid"
-mkdir -p "${HARNESS_SESSIONS}/${old_a}" "${HARNESS_SESSIONS}/${new_id}" "${HARNESS_SESSIONS}/${old_z}"
+missing_cwd="20240101-000000-missing-cwd"
+mkdir -p "${HARNESS_SESSIONS}/${old_a}" "${HARNESS_SESSIONS}/${new_id}" "${HARNESS_SESSIONS}/${old_z}" "${HARNESS_SESSIONS}/${missing_cwd}"
+touch "${HARNESS_SESSIONS}/newer-non-session-file"
+printf 'cwd=%s\n' "${PWD}" > "${HARNESS_SESSIONS}/${old_a}/session.conf"
+printf 'cwd=%s\n' "${PWD}" > "${HARNESS_SESSIONS}/${new_id}/session.conf"
+printf 'cwd=/other/project\n' > "${HARNESS_SESSIONS}/${old_z}/session.conf"
 mkdir -p "${HARNESS_SESSIONS}/${new_id}/messages"
 cat > "${HARNESS_SESSIONS}/${new_id}/messages/0001-user.md" <<'MSG'
 ---
@@ -57,9 +63,11 @@ MSG
 
 touch -t 202401010101 "${HARNESS_SESSIONS}/${old_a}"
 touch -t 202401010103 "${HARNESS_SESSIONS}/${new_id}"
-touch -t 202401010102 "${HARNESS_SESSIONS}/${old_z}"
+touch -t 202401010104 "${HARNESS_SESSIONS}/${old_z}"
+touch -t 202401010105 "${HARNESS_SESSIONS}/${missing_cwd}"
+touch -t 202401010106 "${HARNESS_SESSIONS}/newer-non-session-file"
 
-resume="${HARNESS_ROOT}/plugins/core/commands/resume"
+resume="$(cd "${HARNESS_ROOT}" && pwd)/plugins/core/commands/resume"
 output="$(printf '/quit\n' | bash "${resume}" 2>&1)"
 
 case "${output}" in
@@ -79,6 +87,42 @@ fi
 
 if [[ "${output}" != *"tool line 10"* || "${output}" == *"tool line 11"* || "${output}" != *"[... 1 lines omitted]"* ]]; then
   echo "FAIL: resume did not truncate tool result history"
+  echo "${output}"
+  exit 1
+fi
+
+mkdir -p "${HARNESS_SESSIONS}/${old_a}/messages"
+cat > "${HARNESS_SESSIONS}/${old_a}/messages/0001-user.md" <<'MSG'
+---
+role: user
+seq: 0001
+timestamp: 2024-01-01T01:01:00Z
+---
+explicit session history
+MSG
+
+output="$(printf '/quit\n' | bash "${resume}" "${old_a}" 2>&1)"
+case "${output}" in
+  *"session: ${old_a}"*) ;;
+  *)
+    echo "FAIL: resume did not open explicit session"
+    echo "${output}"
+    exit 1
+    ;;
+esac
+
+if [[ "${output}" != *"explicit session history"* || "${output}" == *"previous question"* ]]; then
+  echo "FAIL: resume did not print explicit session history"
+  echo "${output}"
+  exit 1
+fi
+
+no_match_dir="${_tmpdir}/no-match"
+mkdir -p "${no_match_dir}"
+rc=0
+output="$(cd "${no_match_dir}" && printf '/quit\n' | bash "${resume}" 2>&1)" || rc=$?
+if (( rc == 0 )) || [[ "${output}" != *"no sessions found for current directory: ${no_match_dir}"* || "${output}" != *"harness resume <session-id>"* ]]; then
+  echo "FAIL: resume did not explain missing cwd match"
   echo "${output}"
   exit 1
 fi

@@ -92,6 +92,11 @@ call() {
     cat "${err_tmp}" >> "${HARNESS_LOG}" 2>/dev/null || true
     if (( rc != 0 )); then
       _log "hook ${hook_map[$base]} exited ${rc} during ${stage}"
+      if echo "${current}" | jq -e '.error // empty' >/dev/null 2>&1; then
+        rm -f "${err_tmp}"
+        printf '%s' "${current}"
+        return ${rc}
+      fi
       stderr_tail="$(tail -n 2 "${err_tmp}" 2>/dev/null)"
       err_msg="hook ${hook_map[$base]} exited ${rc} during ${stage}"
       [[ -n "${stderr_tail}" ]] && err_msg="${err_msg}: ${stderr_tail}"

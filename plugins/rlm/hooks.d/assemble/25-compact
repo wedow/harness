@@ -49,12 +49,13 @@ Do not continue the prior task from memory or guesswork. Your first action MUST 
 Required recovery protocol:
 1. Act as a thin recovery coordinator. Do not read archived files end-to-end yourself except tiny files or targeted line windows.
 2. Build a cheap inventory of ${session}/archives/${ts}/messages/ first: file names, roles, counts, sizes, and small previews using shell tools such as find, wc, grep, head, tail, or line-window reads.
-3. Spawn focused subagents to inspect the archive intentionally. Subagents may recursively use their own subagents when the archive is large or questions split naturally, but every level must sip context first: inventory, grep, head/tail, and targeted line windows before larger reads.
-4. Prefer user and assistant messages for objective, decisions, plans, and current state. Treat tool_result messages as secondary evidence. Read tool results only when a specific question requires their output.
-5. Have subagents produce an ultra-slim recovery summary plus an index of the most important archived regions. The index must include citations to specific archive message files, and line ranges when useful, so you can tendril back into the archive for details instead of relying on a lossy summary.
-6. Recover at minimum: active objective, active skill/workflow in progress, whether any skill must be reinvoked to continue cleanly, completed steps, pending next action, relevant files/tickets/commands, blockers or failures, and decisions already made. Query project files, git, tickets, or notes when archive findings show those are needed to resume safely.
-7. If an active skill was in progress, reinvoke/load that skill before resuming its workflow, then follow its instructions from the recovered state.
-8. Write the recovered state to ${session}/notes/post-compaction-recovery.md.
+3. Spawn focused subagents to inspect the archive intentionally. Subagents may recursively use their own subagents when the archive is large or questions split naturally, but every level must sip context first: inventory, grep, head/tail, and targeted line windows before larger reads. Keep a context budget: prefer short summaries, counts, and citations over pasted content.
+4. If subagents fail or return unusable output, use a manual targeted fallback: continue with shell inventory, grep/head/tail, and narrow line-window reads rather than bulk-reading archives.
+5. Prefer user and assistant messages for objective, decisions, plans, and current state. Treat tool_result messages as secondary evidence. Read tool results only when a specific question requires their output.
+6. Have subagents produce an ultra-slim recovery summary plus an index of the most important archived regions. The index must include citations to specific archive message files, and line ranges when useful, so you can tendril back into the archive for details instead of relying on a lossy summary.
+7. Recover at minimum: active objective, active skill/workflow in progress, whether any skill must be reinvoked to continue cleanly, completed steps, pending next action, relevant files/tickets/commands, blockers or failures, and decisions already made. Query project files, git, tickets, or notes when archive findings show those are needed to resume safely.
+8. If an active skill was in progress, reinvoke/load that skill before resuming its workflow, then follow its instructions from the recovered state.
+9. Write the recovered state to ${session}/notes/post-compaction-recovery.md.
 
 Only after that recovery note exists should you resume the task. Use additional narrow subagent archive queries whenever the summary is insufficient.
 EOF

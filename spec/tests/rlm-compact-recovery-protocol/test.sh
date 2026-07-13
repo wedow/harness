@@ -37,7 +37,10 @@ for required in \
   "notes/post-compaction-recovery.md" \
   "active skill" \
   "reinvoke" \
-  "Do not continue"; do
+  "Do not continue" \
+  "fallback" \
+  "manual targeted" \
+  "context budget"; do
   if ! grep -qi "${required}" <<< "${prompt}"; then
     echo "expected continuation prompt to include recovery concept: ${required}" >&2
     echo "${prompt}" >&2

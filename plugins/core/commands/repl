@@ -172,9 +172,13 @@ _handle_sigint() {
   fi
   _kill_group
 }
+_print_resume_instructions() {
+  echo "To continue this session, run harness resume $(basename "${session_dir}")" >&2
+}
 _cleanup_repl() {
   _kill_group
   wait 2>/dev/null || true
+  _print_resume_instructions
 }
 trap _cleanup_repl EXIT HUP TERM
 trap _handle_sigint INT

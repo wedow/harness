@@ -88,7 +88,7 @@ cat > "${fakebin}/tmux" <<'FAKE'
 case "$1" in
   split-window)
     # Simulate the pane running, crashing, and writing its exit code marker.
-    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
     [[ -n "${sess_dir}" ]] && echo "99" > "${sess_dir}/.exit_code"
     echo '%pane1'
     ;;
@@ -110,7 +110,7 @@ cat > "${fakebin}/tmux" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
   split-window)
-    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
     if [[ -n "${sess_dir}" ]]; then
       echo "0" > "${sess_dir}/.exit_code"
       mkdir -p "${sess_dir}/messages"
@@ -145,7 +145,7 @@ cat > "${fakebin}/tmux" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
   split-window)
-    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
     [[ -n "${sess_dir}" ]] && touch "${sess_dir}/.started"
     echo '%pane1'
     ;;
@@ -168,7 +168,7 @@ cat > "${fakebin}/tmux" <<'FAKE'
 #!/usr/bin/env bash
 case "$1" in
   split-window)
-    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | head -1)"
+    sess_dir="$(find "${HARNESS_SESSION}/.harness/sessions" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort | tail -1)"
     [[ -n "${sess_dir}" ]] && echo "0" > "${sess_dir}/.exit_code"
     echo '%pane1'
     ;;

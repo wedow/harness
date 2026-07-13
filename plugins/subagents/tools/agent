@@ -137,7 +137,7 @@ seq: ${seq}
 timestamp: $(date -Iseconds)
 ---
 HEADER
-        printf '%s' "${prompt}"
+        printf '%s\n' "${prompt}"
       } > "${session_dir}/messages/${seq}-user.md"
 
       # Build a shell-safe command for the tmux pane.

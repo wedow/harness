@@ -8,8 +8,11 @@ set -euo pipefail
   cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
   [[ -f "${cache}" ]] || exit 1
   jq -e '.chatgpt | length > 0' "${cache}" &>/dev/null || exit 1
+  access_token="$(jq -r '.chatgpt[0].access_token // empty' "${cache}")"
+  [[ -n "${access_token}" ]] || exit 1
   exp="$(jq -r '.chatgpt[0].expires_at // "0"' "${cache}")"
-  [[ "${exp}" == "0" ]] || [[ "$(date +%s)" -lt "${exp}" ]]
+  refresh_token="$(jq -r '.chatgpt[0].refresh_token // empty' "${cache}")"
+  [[ -n "${refresh_token}" ]] || [[ "${exp}" == "0" ]] || [[ "$(date +%s)" -lt "${exp}" ]]
   exit $?
 }
 [[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-5.4"; exit 0; }

@@ -13,6 +13,8 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Fixed ChatGPT provider auto-detection rejecting expired access tokens that can be renewed with a configured refresh token.
+
 ### Removed
 
 ## [0.3.0] - 2026-07-13

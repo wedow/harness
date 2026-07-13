@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 25-compact — archive-based compaction. When total message content exceeds
-# RLM_COMPACT_TOTAL (default 200000 chars), archives the current messages dir
+# RLM_COMPACT_TOTAL (default 2000000 chars), archives the current messages dir
 # and injects a continuation message. Signals reassembly via next_state=assemble.
 set -euo pipefail
 
@@ -9,7 +9,7 @@ payload="$(cat)"
 session="${HARNESS_SESSION:-}"
 [[ -n "${session}" && -d "${session}/messages" ]] || { echo "${payload}"; exit 0; }
 
-total_threshold="${RLM_COMPACT_TOTAL:-200000}"
+total_threshold="${RLM_COMPACT_TOTAL:-2000000}"
 msg_dir="${session}/messages"
 
 # Estimate total content size from message files on disk

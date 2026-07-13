@@ -5,7 +5,7 @@ setup
 
 hook="${HARNESS_ROOT}/plugins/anthropic/hooks.d/receive/10-save"
 
-input='{"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50},"content":[{"type":"text","text":"Hello, world!"}]}'
+input='{"model":"claude-sonnet-4-20250514","stop_reason":"end_turn","usage":{"input_tokens":100,"output_tokens":50,"cache_read_input_tokens":80,"cache_creation_input_tokens":10},"content":[{"type":"text","text":"Hello, world!"}]}'
 
 out="$(echo "$input" | "$hook")"
 
@@ -16,6 +16,11 @@ assert_file_exists "$msg"
 # Assert frontmatter fields
 assert_file_contains "$msg" "role: assistant"
 assert_file_contains "$msg" "stop: end"
+assert_file_contains "$msg" "tokens_in: 100"
+assert_file_contains "$msg" "tokens_out: 50"
+assert_file_contains "$msg" "tokens_total: 150"
+assert_file_contains "$msg" "tokens_cache_read: 80"
+assert_file_contains "$msg" "tokens_cache_write: 10"
 
 # Assert body content
 assert_file_contains "$msg" "Hello, world!"

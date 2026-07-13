@@ -19,6 +19,9 @@ tool_calls="$(echo "${message}" | jq -c '.tool_calls // empty')"
 model="$(echo "${response}" | jq -r '.model // ""')"
 tokens_in="$(echo "${response}" | jq -r '.usage.prompt_tokens // 0')"
 tokens_out="$(echo "${response}" | jq -r '.usage.completion_tokens // 0')"
+tokens_total="$(echo "${response}" | jq -r '.usage.total_tokens // ((.usage.prompt_tokens // 0) + (.usage.completion_tokens // 0))')"
+tokens_cache_read="$(echo "${response}" | jq -r '.usage.prompt_tokens_details.cached_tokens // 0')"
+tokens_cache_write=0
 
 # Normalize stop reason to canonical values
 case "${finish_reason}" in
@@ -76,6 +79,9 @@ provider: ${HARNESS_PROVIDER}
 stop: ${stop}
 tokens_in: ${tokens_in}
 tokens_out: ${tokens_out}
+tokens_total: ${tokens_total}
+tokens_cache_read: ${tokens_cache_read}
+tokens_cache_write: ${tokens_cache_write}
 ---
 ${body}
 MSGEOF

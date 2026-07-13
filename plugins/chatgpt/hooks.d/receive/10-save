@@ -20,6 +20,9 @@ model="$(echo "${response}" | jq -r '.model // ""')"
 status="$(echo "${response}" | jq -r '.status // "completed"')"
 tokens_in="$(echo "${response}" | jq -r '.usage.input_tokens // 0')"
 tokens_out="$(echo "${response}" | jq -r '.usage.output_tokens // 0')"
+tokens_total="$(echo "${response}" | jq -r '.usage.total_tokens // ((.usage.input_tokens // 0) + (.usage.output_tokens // 0))')"
+tokens_cache_read="$(echo "${response}" | jq -r '.usage.input_tokens_details.cached_tokens // 0')"
+tokens_cache_write=0
 
 # Build body and tool items from the output array
 body=""
@@ -86,6 +89,9 @@ provider: ${HARNESS_PROVIDER}
 stop: ${stop}
 tokens_in: ${tokens_in}
 tokens_out: ${tokens_out}
+tokens_total: ${tokens_total}
+tokens_cache_read: ${tokens_cache_read}
+tokens_cache_write: ${tokens_cache_write}
 ---
 ${body}
 EOF

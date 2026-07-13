@@ -35,7 +35,7 @@ cat >/dev/null
 printf '%s\n\n' \
   'data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"call_123","name":"bash"}}' \
   'data: {"type":"response.function_call_arguments.done","output_index":0,"arguments":"{\"command\":\"pwd\"}"}' \
-  'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{"input_tokens":12,"output_tokens":3},"output":[]}}'
+  'data: {"type":"response.completed","response":{"id":"resp_1","model":"gpt-5.4","status":"completed","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15,"input_tokens_details":{"cached_tokens":9}},"output":[]}}'
 CURL
 chmod +x "${mock_bin}/curl"
 
@@ -57,6 +57,11 @@ out="$(echo "${response}" | "${receive_hook}")"
 msg="$(ls -1 "${HARNESS_SESSION}/messages/"*-assistant.md)"
 assert_file_exists "${msg}"
 assert_file_contains "${msg}" "stop: tool_calls"
+assert_file_contains "${msg}" "tokens_in: 12"
+assert_file_contains "${msg}" "tokens_out: 3"
+assert_file_contains "${msg}" "tokens_total: 15"
+assert_file_contains "${msg}" "tokens_cache_read: 9"
+assert_file_contains "${msg}" "tokens_cache_write: 0"
 
 assert_json '.next_state' "$out" "tool_exec"
 assert_json '.tool_calls[0].id' "$out" "call_123"

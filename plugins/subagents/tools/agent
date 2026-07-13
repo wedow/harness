@@ -78,6 +78,10 @@ JSON
     model="$(echo "${input}" | jq -r '.model // empty')"
     provider="$(echo "${input}" | jq -r '.provider // empty')"
     schema="$(echo "${input}" | jq -c '.schema // empty')"
+    validation_schema="${schema}"
+    if [[ -n "${schema}" && "$(echo "${schema}" | jq -r '.type // empty')" == "json_schema" ]]; then
+      validation_schema="$(echo "${schema}" | jq -c '.schema')"
+    fi
 
     # Build env overrides
     env_args=()
@@ -95,14 +99,14 @@ JSON
     if [[ -n "${schema}" ]]; then
       # --- structured-output mode (headless): instruct the subagent to emit raw
       # JSON, extract it, check required keys, retry on mismatch, emit compact. ---
-      instr=$'\n\n'"Return ONLY a single JSON object that satisfies this JSON Schema. Output raw JSON with no prose and no code fence:"$'\n'"${schema}"
+      instr=$'\n\n'"Return ONLY a single JSON object that satisfies this JSON Schema. Output raw JSON with no prose and no code fence:"$'\n'"${validation_schema}"
       ask="${prompt}${instr}"; result=""; raw=""; tries=0
       while (( tries++ < "${HARNESS_AGENT_SCHEMA_RETRIES:-3}" )); do
         _run_child_or_fail "${ask}"
         raw="${_child_out}"
         cand="$(printf '%s' "${raw}" | sed -n '/^```/,/^```/{/^```/d;p;}')"
         [[ -n "${cand}" ]] || cand="${raw}"
-        if err="$(_schema_error "${cand}" "${schema}")"; then
+        if err="$(_schema_error "${cand}" "${validation_schema}")"; then
           result="$(printf '%s' "${cand}" | jq -c .)"; break
         fi
         ask="${prompt}${instr}"$'\n\n'"Your previous reply was invalid (${err}). Return ONLY the JSON object, nothing else."

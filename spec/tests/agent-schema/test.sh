@@ -66,6 +66,26 @@ out="$(echo '{"prompt":"hello"}' | HARNESS_ROOT="${fakeC}" "${agent_tool}" --exe
 assert_eq "no-schema passthrough" "${out}" 'a plain free-form answer'
 assert_eq "inline branch dispatches the agent subcommand (not 'run')" "$(cat "${SUBCMD_FILE}")" "agent"
 
+# ---------- Phase D: OpenAI structured-output json_schema envelope is accepted ----------
+fakeD="${_tmpdir}/fakeD"; mkdir -p "${fakeD}/bin"
+export CALLS_FILE="${_tmpdir}/callsD"
+cat > "${fakeD}/bin/harness" <<'STUB'
+#!/usr/bin/env bash
+n=$(( $(cat "${CALLS_FILE}" 2>/dev/null || echo 0) + 1 )); echo "$n" > "${CALLS_FILE}"
+if (( n == 1 )); then
+  printf '{"title":"Only title"}\n'
+else
+  printf '{"title":"Only title","authors":["Ada"]}\n'
+fi
+STUB
+chmod +x "${fakeD}/bin/harness"
+out="$(cat <<'JSON' | HARNESS_ROOT="${fakeD}" "${agent_tool}" --exec
+{"prompt":"extract","schema":{"type":"json_schema","name":"paper","schema":{"type":"object","properties":{"title":{"type":"string"},"authors":{"type":"array","items":{"type":"string"}}},"required":["title","authors"],"additionalProperties":false},"strict":true}}
+JSON
+)"
+assert_eq "json_schema envelope validates nested schema" "${out}" '{"title":"Only title","authors":["Ada"]}'
+assert_eq "json_schema envelope retry happened" "$(cat "${CALLS_FILE}")" "2"
+
 # ---------- schema field advertised in --schema ----------
 assert_json '.input_schema.properties.schema.type' "$("${agent_tool}" --schema)" "object"
 

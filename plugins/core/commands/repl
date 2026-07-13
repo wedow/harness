@@ -172,7 +172,47 @@ _handle_sigint() {
   fi
   _kill_group
 }
+_frontmatter_value() {
+  local key="$1" file="$2"
+  awk -F': ' -v key="${key}" '
+    NR == 1 && $0 == "---" { in_frontmatter = 1; next }
+    in_frontmatter && $0 == "---" { exit }
+    in_frontmatter && $1 == key { print $2; exit }
+  ' "${file}"
+}
+
+_print_session_stats() {
+  local msg_dir="${session_dir}/messages"
+  [[ -d "${msg_dir}" ]] || return 0
+
+  local tokens_in=0 tokens_out=0 tokens_total=0 cache_read=0 cache_write=0
+  local file in_count out_count total_count read_count write_count
+  while IFS= read -r file; do
+    in_count="$(_frontmatter_value tokens_in "${file}")"
+    out_count="$(_frontmatter_value tokens_out "${file}")"
+    total_count="$(_frontmatter_value tokens_total "${file}")"
+    read_count="$(_frontmatter_value tokens_cache_read "${file}")"
+    write_count="$(_frontmatter_value tokens_cache_write "${file}")"
+
+    in_count="${in_count:-0}"
+    out_count="${out_count:-0}"
+    total_count="${total_count:-$(( in_count + out_count ))}"
+    read_count="${read_count:-0}"
+    write_count="${write_count:-0}"
+
+    tokens_in=$(( tokens_in + in_count ))
+    tokens_out=$(( tokens_out + out_count ))
+    tokens_total=$(( tokens_total + total_count ))
+    cache_read=$(( cache_read + read_count ))
+    cache_write=$(( cache_write + write_count ))
+  done < <(find "${msg_dir}" -maxdepth 1 -type f -name '*-assistant.md' | sort)
+
+  (( tokens_total == 0 && tokens_in == 0 && tokens_out == 0 )) && return 0
+  echo "Token usage: total=${tokens_total} input=${tokens_in} (+ ${cache_read} cached, + ${cache_write} written) output=${tokens_out}" >&2
+}
+
 _print_resume_instructions() {
+  _print_session_stats
   echo "To continue this session, run harness resume $(basename "${session_dir}")" >&2
 }
 _cleanup_repl() {

@@ -28,9 +28,44 @@ export HARNESS_MODEL="mock"
 session_id="20260712-212354-581532"
 mkdir -p "${HARNESS_SESSIONS}/${session_id}"
 printf 'cwd=%s\n' "${PWD}" > "${HARNESS_SESSIONS}/${session_id}/session.conf"
+mkdir -p "${HARNESS_SESSIONS}/${session_id}/messages"
+cat > "${HARNESS_SESSIONS}/${session_id}/messages/0001-assistant.md" <<'MSG'
+---
+role: assistant
+tokens_in: 100
+tokens_out: 25
+tokens_total: 125
+tokens_cache_read: 80
+tokens_cache_write: 10
+---
+first
+MSG
+cat > "${HARNESS_SESSIONS}/${session_id}/messages/0002-assistant.md" <<'MSG'
+---
+role: assistant
+tokens_in: 50
+tokens_out: 5
+tokens_total: 55
+tokens_cache_read: 40
+tokens_cache_write: 0
+---
+second
+MSG
 
 repl="${HARNESS_ROOT}/plugins/core/commands/repl"
 output="$(printf '/quit\n' | bash "${repl}" "${session_id}" 2>&1)"
+
+if [[ "${output}" != *"Token usage: total=180 input=150 (+ 120 cached, + 10 written) output=30"* ]]; then
+  echo "FAIL: repl did not print token usage stats on shutdown"
+  echo "${output}"
+  exit 1
+fi
+
+if [[ "${output}" != *"Token usage: total=180 input=150 (+ 120 cached, + 10 written) output=30"$'\n'"To continue this session, run harness resume ${session_id}"* ]]; then
+  echo "FAIL: token usage stats were not printed before resume instructions"
+  echo "${output}"
+  exit 1
+fi
 
 if [[ "${output}" != *"To continue this session, run harness resume ${session_id}"* ]]; then
   echo "FAIL: repl did not print resume instructions on shutdown"

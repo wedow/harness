@@ -92,6 +92,7 @@ JSON
     if [[ -n "${HARNESS_SESSION:-}" ]]; then
       env_args+=(HARNESS_SESSIONS="${HARNESS_SESSION}/.harness/sessions")
       env_args+=(HARNESS_PARENT_SESSION="${HARNESS_SESSION##*/}")
+      env_args+=(HARNESS_DEPTH="$(( ${HARNESS_DEPTH:-0} + 1 ))")
     fi
 
     workdir="${HARNESS_CWD:-${PWD}}"
@@ -162,6 +163,7 @@ HEADER
       env_export+=" HARNESS_SESSION=${q_session_dir}"
       env_export+=" HARNESS_MODEL=${q_model}"
       env_export+=" HARNESS_PROVIDER=${q_provider}"
+      env_export+=" HARNESS_DEPTH=$(( ${HARNESS_DEPTH:-0} + 1 ))"
 
       # The pane touches .started before running harness, then writes harness
       # stream's exit code to .exit_code on return. The pair lets the parent

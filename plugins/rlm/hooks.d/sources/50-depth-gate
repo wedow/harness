@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# 50-depth-gate — past RLM_MAX_DEPTH (default 2), drop this plugin from the
+# source list. Deep subagents then inherit none of rlm's prompts/hooks/tools and
+# execute as leaves instead of orchestrating further delegation. Mirrors
+# 40-scope-providers: stdin/stdout is {sources:[...]}.
+set -euo pipefail
+
+(( ${HARNESS_DEPTH:-0} > ${RLM_MAX_DEPTH:-2} )) || { cat; exit 0; }
+
+# This hook's own dir: …/plugins/rlm/hooks.d/sources -> up two = …/plugins/rlm
+self="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+jq --arg self "${self}" '{sources: (.sources | map(select(. != $self)))}'

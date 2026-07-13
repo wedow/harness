@@ -94,3 +94,15 @@ assert_eq "prepend-file-linecount" "$(wc -l < "${file}" | tr -d ' ')" "3"
 assert_eq "prepend-file-head1" "$(sed -n '1p' "${file}")" "head1"
 assert_eq "prepend-file-head2" "$(sed -n '2p' "${file}")" "head2"
 assert_eq "prepend-file-existing" "$(sed -n '3p' "${file}")" "existing"
+
+# 8. Editing executable files preserves executable mode
+file="${_tmpdir}/executable.sh"
+printf '#!/usr/bin/env bash\necho old\n' > "${file}"
+chmod 755 "${file}"
+anchor=$(get_anchor "${file}" 2)
+jq -n --arg path "${file}" --arg pos "${anchor}" --arg end "${anchor}" \
+  '{path:$path, edits:[{type:"replace_range", pos:$pos, end:$end, content:["echo new"]}]}' \
+  | "${edit_tool}" --exec >/dev/null
+assert_eq "executable-content" "$(sed -n '2p' "${file}")" "echo new"
+[[ -x "${file}" ]] || { echo "FAIL: executable bit should be preserved"; exit 1; }
+assert_eq "executable-mode" "$(stat -c '%a' "${file}")" "755"

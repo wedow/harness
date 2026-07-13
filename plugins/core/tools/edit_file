@@ -190,6 +190,11 @@ JSON
     tmpfile="$(mktemp)"
     trap 'rm -f "${tmpfile}"' EXIT
 
+    replace_with_tmp() {
+      chmod --reference="${path}" "${tmpfile}"
+      mv "${tmpfile}" "${path}"
+    }
+
     total_edited=0
     edit_summaries=()
 
@@ -205,7 +210,7 @@ JSON
           head -n $((pos_line - 1)) "${path}" > "${tmpfile}"
           write_content "${edit}" "${tmpfile}" || true
           tail -n +$((end_line + 1)) "${path}" >> "${tmpfile}"
-          mv "${tmpfile}" "${path}"
+          replace_with_tmp
 
           range_size=$(( end_line - pos_line + 1 ))
           total_edited=$(( total_edited + range_size ))
@@ -218,7 +223,7 @@ JSON
           head -n "${pos_line}" "${path}" > "${tmpfile}"
           write_content "${edit}" "${tmpfile}" || true
           tail -n +$((pos_line + 1)) "${path}" >> "${tmpfile}"
-          mv "${tmpfile}" "${path}"
+          replace_with_tmp
 
           total_edited=$(( total_edited + 1 ))
           edit_summaries+=("appended after line ${pos_line}")
@@ -230,7 +235,7 @@ JSON
           head -n $((pos_line - 1)) "${path}" > "${tmpfile}"
           write_content "${edit}" "${tmpfile}" || true
           tail -n +"${pos_line}" "${path}" >> "${tmpfile}"
-          mv "${tmpfile}" "${path}"
+          replace_with_tmp
 
           total_edited=$(( total_edited + 1 ))
           edit_summaries+=("prepended before line ${pos_line}")
@@ -244,7 +249,7 @@ JSON
         prepend_file)
           if write_content "${edit}" "${tmpfile}"; then
             cat "${path}" >> "${tmpfile}"
-            mv "${tmpfile}" "${path}"
+            replace_with_tmp
           fi
           edit_summaries+=("prepended to start of file")
           ;;

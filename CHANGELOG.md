@@ -13,6 +13,7 @@ and this project adheres to Semantic Versioning.
 
 ### Fixed
 
+- Made delegation limits enforceable: leaf agents no longer discover the RLM or subagent plugins, direct over-depth calls fail closed, and descendant provider calls queue behind a run-scoped concurrency limit (`HARNESS_AGENT_CONCURRENCY`, default 4).
 - Fixed ChatGPT provider auto-detection rejecting expired access tokens that can be renewed with a configured refresh token.
 
 ### Removed

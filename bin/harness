@@ -29,9 +29,10 @@ HARNESS_MODEL="${HARNESS_MODEL:-}"
 HARNESS_PROVIDER="${HARNESS_PROVIDER:-}"
 HARNESS_MAX_TURNS="${HARNESS_MAX_TURNS:-100}"
 HARNESS_LOG="${HARNESS_LOG:-/dev/stderr}"
+HARNESS_RUN_ID="${HARNESS_RUN_ID:-$(date +%s)-$$-${RANDOM}}"
 
 # Export early — hooks run as subprocesses and need these
-export HARNESS_VERSION HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_MODEL HARNESS_PROVIDER HARNESS_MAX_TURNS HARNESS_LOG
+export HARNESS_VERSION HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_MODEL HARNESS_PROVIDER HARNESS_MAX_TURNS HARNESS_LOG HARNESS_RUN_ID
 
 # --------------------------------------------------------------------------- #
 #  Source discovery                                                            #

@@ -73,6 +73,19 @@ JSON
     echo "Spawn a subagent to handle a task"
     ;;
   --exec)
+    depth="${HARNESS_DEPTH:-0}"
+    max_depth="${RLM_MAX_DEPTH:-2}"
+    [[ "${depth}" =~ ^[0-9]+$ ]] \
+      || { echo "agent: HARNESS_DEPTH must be a non-negative integer" >&2; exit 1; }
+    [[ "${max_depth}" =~ ^[0-9]+$ ]] \
+      || { echo "agent: RLM_MAX_DEPTH must be a non-negative integer" >&2; exit 1; }
+    depth=$(( 10#${depth} )); max_depth=$(( 10#${max_depth} ))
+    if (( depth >= max_depth )); then
+      echo "agent: delegation depth ${depth} reached maximum ${max_depth}" >&2
+      exit 1
+    fi
+
+    agent_session_root="${HARNESS_AGENT_SESSION_ROOT:-${HARNESS_SESSION:-}}"
     input="$(cat)"
     prompt="$(echo "${input}" | jq -r '.prompt')"
     model="$(echo "${input}" | jq -r '.model // empty')"
@@ -93,6 +106,7 @@ JSON
       env_args+=(HARNESS_SESSIONS="${HARNESS_SESSION}/.harness/sessions")
       env_args+=(HARNESS_PARENT_SESSION="${HARNESS_SESSION##*/}")
       env_args+=(HARNESS_DEPTH="$(( ${HARNESS_DEPTH:-0} + 1 ))")
+      env_args+=(HARNESS_AGENT_SESSION_ROOT="${agent_session_root:-${HARNESS_SESSION}}")
     fi
 
     workdir="${HARNESS_CWD:-${PWD}}"
@@ -164,6 +178,14 @@ HEADER
       env_export+=" HARNESS_MODEL=${q_model}"
       env_export+=" HARNESS_PROVIDER=${q_provider}"
       env_export+=" HARNESS_DEPTH=$(( ${HARNESS_DEPTH:-0} + 1 ))"
+      printf -v q_agent_session_root %q "${agent_session_root:-${HARNESS_SESSION}}"
+      env_export+=" HARNESS_AGENT_SESSION_ROOT=${q_agent_session_root}"
+      printf -v q_agent_concurrency %q "${HARNESS_AGENT_CONCURRENCY:-4}"
+      env_export+=" HARNESS_AGENT_CONCURRENCY=${q_agent_concurrency}"
+      printf -v q_max_depth %q "${RLM_MAX_DEPTH:-2}"
+      env_export+=" RLM_MAX_DEPTH=${q_max_depth}"
+      printf -v q_run_id %q "${HARNESS_RUN_ID:-}"
+      env_export+=" HARNESS_RUN_ID=${q_run_id}"
 
       # The pane touches .started before running harness, then writes harness
       # stream's exit code to .exit_code on return. The pair lets the parent

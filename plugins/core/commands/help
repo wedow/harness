@@ -84,6 +84,8 @@ cat <<'EOF'
   HARNESS_MODEL            model (auto from provider --defaults)
   HARNESS_PROVIDER         provider (auto: first with credentials)
   HARNESS_MAX_TURNS        max agent loop iterations (100)
+  RLM_MAX_DEPTH            maximum subagent delegation depth (2)
+  HARNESS_AGENT_CONCURRENCY max active subagent provider calls (4)
 EOF
 
 echo ""

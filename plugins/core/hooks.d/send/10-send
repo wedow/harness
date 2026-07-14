@@ -5,6 +5,32 @@ set -euo pipefail
 
 payload="$(cat)"
 
+_agent_slot=""
+
+_release_agent_slot() {
+  [[ -n "${_agent_slot}" ]] || return 0
+  rm -f "${_agent_slot}/pid"
+  rmdir "${_agent_slot}" 2>/dev/null || true
+  _agent_slot=""
+}
+
+_acquire_agent_slot() {
+  local root="$1" run_id="$2" limit="$3" slots slot i
+  slots="${root}/.agent-slots/${run_id}"
+  mkdir -p "${slots}"
+  while true; do
+    for (( i=1; i<=limit; i++ )); do
+      slot="${slots}/${i}"
+      if mkdir "${slot}" 2>/dev/null; then
+        printf '%s\n' "$$" > "${slot}/pid"
+        _agent_slot="${slot}"
+        return 0
+      fi
+    done
+    sleep 0.1
+  done
+}
+
 IFS=':' read -ra sources <<< "${HARNESS_SOURCES}"
 
 _find_bin() {
@@ -131,11 +157,26 @@ fi
 
 # Call provider, capturing stderr for error reporting
 err_file="$(mktemp)"
-trap 'rm -f "${err_file}"; _cleanup_dispatch' EXIT
+trap 'rm -f "${err_file}"; _release_agent_slot; _cleanup_dispatch' EXIT
 
 [[ -n "${HARNESS_SESSION:-}" ]] && > "${HARNESS_SESSION}/.stream"
 
+if [[ -n "${HARNESS_AGENT_SESSION_ROOT:-}" ]]; then
+  concurrency="${HARNESS_AGENT_CONCURRENCY:-4}"
+  [[ "${concurrency}" =~ ^[1-9][0-9]*$ ]] || {
+    jq -n --arg msg "HARNESS_AGENT_CONCURRENCY must be a positive integer" '{error: $msg}'
+    exit 1
+  }
+  run_id="${HARNESS_RUN_ID:-}"
+  [[ "${run_id}" =~ ^[A-Za-z0-9_.-]+$ ]] || {
+    jq -n --arg msg "HARNESS_RUN_ID must contain only letters, numbers, dots, underscores, or hyphens" '{error: $msg}'
+    exit 1
+  }
+  _acquire_agent_slot "${HARNESS_AGENT_SESSION_ROOT}" "${run_id}" "${concurrency}"
+fi
+
 if response="$(echo "${payload}" | "${provider_bin}" ${stream_flag} 2>"${err_file}")"; then
+  _release_agent_slot
   _cleanup_dispatch
   cat "${err_file}" >> "${HARNESS_LOG}"
   if ! echo "${response}" | jq '. + {next_state: "receive"}' 2>/dev/null; then
@@ -145,6 +186,7 @@ if response="$(echo "${payload}" | "${provider_bin}" ${stream_flag} 2>"${err_fil
   fi
 else
   rc=$?
+  _release_agent_slot
   _cleanup_dispatch
   err="$(cat "${err_file}")"
   [[ -n "${err}" ]] && { echo "${err}" >> "${HARNESS_LOG}"; echo "${err}" >&2; }

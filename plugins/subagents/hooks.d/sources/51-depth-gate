@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# 51-depth-gate — make agents at the maximum delegation depth leaf workers.
+set -euo pipefail
+
+depth="${HARNESS_DEPTH:-0}"
+max_depth="${RLM_MAX_DEPTH:-2}"
+[[ "${depth}" =~ ^[0-9]+$ ]] || { echo "HARNESS_DEPTH must be a non-negative integer" >&2; exit 1; }
+[[ "${max_depth}" =~ ^[0-9]+$ ]] || { echo "RLM_MAX_DEPTH must be a non-negative integer" >&2; exit 1; }
+depth=$(( 10#${depth} )); max_depth=$(( 10#${max_depth} ))
+
+(( depth < max_depth )) || {
+  self="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+  jq --arg self "${self}" '{sources: (.sources | map(select(. != $self)))}'
+  exit 0
+}
+
+cat

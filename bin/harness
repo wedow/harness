@@ -12,7 +12,7 @@ fi
 
 set -euo pipefail
 
-HARNESS_VERSION="0.1.0"
+HARNESS_VERSION="0.3.1"
 readonly HARNESS_ROOT="${HARNESS_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
 # Overridable
 HARNESS_HOME="${HARNESS_HOME:-${HOME}/.harness}"

@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# handler — per-connection HTTP entry point. stdin/stdout is the socket.
+# Sourced environment: HARNESS_ROOT, HARNESS_SESSIONS (set by serve).
+set -uo pipefail
+
+source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"
+
+# ------------------------------------------------------------------ parse --
+METHOD="" RPATH="" BODY=""
+declare -A HTTP_HEADERS=()
+
+read -r -t 10 -a REQ_LINE || { exit 0; }
+METHOD="${REQ_LINE[0]:-}"
+RPATH="${REQ_LINE[1]:-/}"
+while IFS= read -r -t 10 h; do
+  h="${h%$'\r'}"; [[ -z "${h}" ]] && break
+  key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"
+done
+if [[ "${METHOD}" == "POST" ]]; then
+  clen="${HTTP_HEADERS[content-length]:-0}"
+  (( clen > 0 )) && IFS= read -r -N "${clen}" -t 30 BODY || true
+fi
+
+# ------------------------------------------------------------------ route --
+case "${METHOD}" in
+  GET)
+    if [[ "${RPATH}" == "/" ]]; then handle_home
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/stream$ ]]; then handle_stream "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_session "${BASH_REMATCH[1]}"
+    else handle_404; fi ;;
+  POST)
+    if [[ "${RPATH}" == "/new" ]]; then handle_new
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_send "${BASH_REMATCH[1]}"
+    else handle_404; fi ;;
+  *) handle_404 ;;
+esac
+
+respond_request

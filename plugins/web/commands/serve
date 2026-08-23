@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# serve — minimal HTTP server for harness sessions (pure server-rendered).
+# Transport: socat, execing the bash handler per connection with the
+# socket on stdin/stdout.
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "serve the web UI (default http://127.0.0.1:8080)"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness" # HARNESS_SESSIONS resolution etc.
+
+PORT="${1:-${HARNESS_SERVE_PORT:-8080}}"
+HANDLER="${HARNESS_ROOT}/plugins/web/lib/handler"
+
+echo "harness serve: http://127.0.0.1:${PORT}" >&2
+
+command -v socat >/dev/null 2>&1 || _die "required: socat"
+exec socat "TCP-LISTEN:${PORT},bind=127.0.0.1,fork,reuseaddr" \
+  "EXEC:${HANDLER},nofork"

@@ -5,12 +5,14 @@
 _HS="$HARNESS_ROOT/bin/harness"
 
 # ---------------------------------------------------------------- layout --
-_head() { # $1 = <title>, stdin = body
+_head() { # $1 = <title>, $2 = current session id (sidebar highlight)
   printf '<!doctype html><html><head><meta charset="utf-8">'
+  printf '<meta name="viewport" content="width=device-width, initial-scale=1">'
   printf '<title>%s</title><style>' "$(html_escape "$1")"
   cat <<'CSS'
 html{height:100%}
 body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 1rem;color:#222;height:100%;display:flex;flex-direction:column}
+#main{flex:1;display:flex;flex-direction:column;min-height:0}
 #view{flex:1;display:flex;flex-direction:column;min-height:0}
 #scroll{flex:1;overflow-y:auto;padding:1rem 0;min-height:0}
 .msg{border:1px solid #ddd;border-radius:6px;margin:.75rem 0;padding:.5rem .75rem}
@@ -18,16 +20,57 @@ body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 
 .msg pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:.25rem 0;font:inherit}
 .meta{color:#888;font-size:.8rem}
 form{display:flex;gap:.5rem;margin:0;padding:1rem 0;background:inherit;position:sticky;bottom:0}
-input[type=text]{flex:1;padding:.5rem;border:1px solid #ccc;border-radius:4px}
+input[type=text]{flex:1;min-width:0;padding:.5rem;border:1px solid #ccc;border-radius:4px}
 button{padding:.5rem 1rem}
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
+#sidebar{position:fixed;top:0;bottom:0;left:0;width:230px;background:#f6f6f6;border-right:1px solid #ddd;padding:1rem;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:20}
+#sidebar.open{transform:none}
+#sidebar form{padding:0}
+#sidebar ul{list-style:none;padding:0;margin:1rem 0 0}
+#sidebar a{display:block;padding:.35rem .5rem;border-radius:4px;text-decoration:none;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sidebar a.here{background:#dde7f5}
+#menu{position:fixed;top:.75rem;left:.75rem;z-index:15;width:2.4rem;height:2.4rem;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer}
+@media (min-width:900px){
+  #menu{display:none}
+  #sidebar{transform:none}
+  body{padding-left:250px}
+}
+@media (max-width:899px){
+  body{max-width:none;padding:0 .5rem}
+  #main{padding-left:3rem}
+}
 CSS
   printf '</style>'
   printf '<script type="module" src="/datastar.js"></script>'
   printf '</head><body>'
+  _sidebar "${2:-}"
+  printf '<main id="main">'
   cat
+  printf '</main>'
+  cat <<'JS'
+<script>
+(() => {
+  const sb = document.getElementById('sidebar');
+  document.getElementById('menu').onclick = () => sb.classList.toggle('open');
+  sb.addEventListener('click', e => { if (e.target.closest('a')) sb.classList.remove('open'); });
+})();
+</script>
+JS
   printf '</body></html>'
+}
+
+_sidebar() { # $1 = current session id
+  local id rows="" s
+  while IFS= read -r s; do
+    [[ -d "${HARNESS_SESSIONS}/${s}" ]] || continue
+    rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(html_escape "${s}")</a></li>"
+  done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
+  printf '<button id="menu" aria-label="toggle sidebar">&#9776;</button>'
+  printf '<nav id="sidebar">'
+  printf '<form method="post" action="/new"><input type="text" name="message" placeholder="new session…"><button>+</button></form>'
+  printf '<ul>%s</ul>' "${rows}"
+  printf '</nav>'
 }
 
 # ---------------------------------------------------------------- routes --
@@ -81,11 +124,10 @@ handle_events() { # $1 = id
   done
 }
 
-handle_new() {
+handle_new() { # empty message = create the session without launching an agent
   local msg; msg="$(_form_field message)"
-  [[ -n "${msg}" ]] || { handle_400 "empty message"; return; }
   local dir; dir="$(_new_session)"
-  _launch_agent "${dir##*/}" "${msg}"
+  [[ -n "${msg}" ]] && _launch_agent "${dir##*/}" "${msg}"
   STATUS=303
   HEADERS+=("Location: /s/${dir##*/}")
 }
@@ -124,7 +166,7 @@ _launch_agent() { # $1 = session id, $2 = message
 
 _session_page() { # $1 = id, $2 = meta line
   local id=$1
-  _head "${id}" <<EOF
+  _head "${id}" "${id}" <<EOF
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
 <div id="view" data-init="@get('/s/$(html_escape "${id}")/events')">
 <div id="scroll">

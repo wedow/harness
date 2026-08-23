@@ -9,14 +9,19 @@ _head() { # $1 = <title>, stdin = body
   printf '<!doctype html><html><head><meta charset="utf-8">'
   printf '<title>%s</title><style>' "$(html_escape "$1")"
   cat <<'CSS'
-body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding:0 1rem;color:#222}
+html{height:100%}
+body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 1rem;color:#222;height:100%;display:flex;flex-direction:column}
+#view{flex:1;display:flex;flex-direction:column;min-height:0}
+#scroll{flex:1;overflow-y:auto;padding:1rem 0;min-height:0}
 .msg{border:1px solid #ddd;border-radius:6px;margin:.75rem 0;padding:.5rem .75rem}
 .user{background:#f0f7ff}.assistant{background:#fafafa}
 .msg pre{white-space:pre-wrap;margin:.25rem 0;font:inherit}
 .meta{color:#888;font-size:.8rem}
-form{display:flex;gap:.5rem;margin:1rem 0}
+form{display:flex;gap:.5rem;margin:0;padding:1rem 0;background:inherit;position:sticky;bottom:0}
 input[type=text]{flex:1;padding:.5rem;border:1px solid #ccc;border-radius:4px}
 button{padding:.5rem 1rem}
+#scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
+#scrollbtn[hidden]{display:none}
 CSS
   printf '</style>'
   printf '<script type="module" src="/datastar.js"></script>'
@@ -122,17 +127,31 @@ _session_page() { # $1 = id, $2 = meta line
   _head "${id}" <<EOF
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
 <div id="view" data-init="@get('/s/$(html_escape "${id}")/events')">
+<div id="scroll">
 $(_transcript "$1")
 </div>
+</div>
+<button id="scrollbtn" hidden title="scroll to bottom">↓</button>
 <form method="post" action="/s/$(html_escape "${id}")">
   <input type="text" name="message" placeholder="reply…" required autofocus>
   <button>send</button>
 </form>
+<script>
+(() => {
+  const scroll = document.getElementById('scroll');
+  const btn = document.getElementById('scrollbtn');
+  const nearBottom = () => scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
+  let stick = true; // autoscroll only while the user is at the bottom
+  new MutationObserver(() => { if (stick) scroll.scrollTop = scroll.scrollHeight; })
+    .observe(scroll, {childList: true, subtree: true, characterData: true});
+  scroll.addEventListener('scroll', () => { stick = nearBottom(); btn.hidden = stick; });
+  btn.addEventListener('click', () => { scroll.scrollTop = scroll.scrollHeight; });
+  scroll.scrollTop = scroll.scrollHeight;
+})();
+</script>
 EOF
 }
 
-# Full transcript fragment. Top-level element id lets datastar morph it in place.
-# Full transcript fragment. Top-level element id lets datastar morph it in place.
 # One awk pass over all message files — no per-message subprocess forks.
 _transcript() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1"

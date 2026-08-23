@@ -15,7 +15,7 @@ body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 
 #scroll{flex:1;overflow-y:auto;padding:1rem 0;min-height:0}
 .msg{border:1px solid #ddd;border-radius:6px;margin:.75rem 0;padding:.5rem .75rem}
 .user{background:#f0f7ff}.assistant{background:#fafafa}
-.msg pre{white-space:pre-wrap;margin:.25rem 0;font:inherit}
+.msg pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:.25rem 0;font:inherit}
 .meta{color:#888;font-size:.8rem}
 form{display:flex;gap:.5rem;margin:0;padding:1rem 0;background:inherit;position:sticky;bottom:0}
 input[type=text]{flex:1;padding:.5rem;border:1px solid #ccc;border-radius:4px}

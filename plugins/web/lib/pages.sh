@@ -69,7 +69,7 @@ handle_events() { # $1 = id
   while :; do
     sig="$(_dir_sig "${dir}")"
     if [[ "${sig}" != "${last}" ]]; then
-      sse_patch "$(_transcript "$1")"
+      sse_patch "$(_transcript "$1")" || exit 0
       last="${sig}"
     fi
     sleep 0.5

@@ -39,12 +39,15 @@ respond_sse() {
 
 # One datastar-patch-elements event carrying a full fragment. Datastar
 # morphs it into the DOM by top-level element id.
+# socat execs us with SIGPIPE ignored, so detect dead sockets via the
+# write error instead: every printf returns nonzero on EPIPE.
 sse_patch() { # $1 = fragment html
-  printf 'event: datastar-patch-elements\n'
-  printf '%s' "$1" | while IFS= read -r l || [[ -n "${l}" ]]; do
-    printf 'data: elements %s\n' "${l}"
-  done
-  printf '\n'
+  local line
+  { printf 'event: datastar-patch-elements\n'; } 2>/dev/null || return 1
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    { printf 'data: elements %s\n' "${line}"; } 2>/dev/null || return 1
+  done < <(printf '%s' "$1" 2>/dev/null)
+  { printf '\n'; } 2>/dev/null || return 1
 }
 
 html_escape() {

@@ -28,7 +28,9 @@ button{padding:.5rem 1rem}
 #sidebar.open{transform:none}
 #sidebar form{padding:0}
 #sidebar ul{list-style:none;padding:0;margin:1rem 0 0}
-#sidebar a{display:block;padding:.35rem .5rem;border-radius:4px;text-decoration:none;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sidebar li{display:flex;align-items:center;gap:.35rem}
+#sidebar a{flex:1;min-width:0;padding:.35rem .5rem;border-radius:4px;text-decoration:none;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#sidebar .spin{flex:none}
 #sidebar a.here{background:#dde7f5}
 .spin{display:inline-block;animation:spin 1s linear infinite;color:#0866ff}
 @keyframes spin{to{transform:rotate(360deg)}}
@@ -118,19 +120,36 @@ _status_fragment() { # $1 = current session id
   printf '%s' "${out}"
 }
 
-_sidebar() { # $1 = current session id
-  local id rows="" s
+# Sidebar list as its own morph target so the hub can push title changes.
+_sb_label() { # $1 = session id — title if set, else the id
+  local t="$(sed -n 's/^title=//p' "${HARNESS_SESSIONS}/$1/session.conf" 2>/dev/null | head -1)"
+  html_escape "${t:-$1}"
+}
+
+_sb_ul() { # $1 = current session id
+  local rows="" s
   while IFS= read -r s; do
     [[ -d "${HARNESS_SESSIONS}/${s}" ]] || continue
-    rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(html_escape "${s}")</a>$(_sb_spin "${s}")</li>"
+    rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(_sb_label "${s}")</a>$(_sb_spin "${s}")</li>"
   done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
+  printf '<ul id="sblist">%s</ul>' "${rows}"
+}
+
+_sidebar() { # $1 = current session id
   printf '<button id="menu" aria-label="toggle sidebar">&#9776;</button>'
   printf '<div id="backdrop" hidden></div>'
   printf '<nav id="sidebar">'
   printf '<div id="sbhead"><span>sessions</span><button id="sbclose" aria-label="close sidebar">&#10005;</button></div>'
   printf '<form method="post" action="/new"><input type="text" name="message" placeholder="new session…"><button>+</button></form>'
-  printf '<ul>%s</ul>' "${rows}"
+  _sb_ul "$1"
   printf '</nav>'
+}
+
+_titles_sig() { # fingerprint of the sidebar's titles — push #sblist when it changes
+  local s
+  ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30 | while IFS= read -r s; do
+    printf '%s:%s\n' "${s}" "$(sed -n 's/^title=//p' "${HARNESS_SESSIONS}/${s}/session.conf" 2>/dev/null)"
+  done | md5sum
 }
 
 # ---------------------------------------------------------------- routes --
@@ -179,7 +198,7 @@ handle_session() { # $1 = id
 # Each connection gets its own fifo under .ui/ so sends can fan out over
 # the whole directory; fifos are removed when the client disconnects.
 handle_events() { # $1 = id
-  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line beat=0 st_last=""
+  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line beat=0 st_last="" ti_last=""
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
   sse_patch '<div id="hb" hidden></div>' # initial beat so the watchdog arms immediately
@@ -199,8 +218,14 @@ handle_events() { # $1 = id
       sse_patch "$(_transcript "$1")" || exit 0
       last="${sig}"
     fi
-    if (( beat % 4 == 0 )); then # every ~2s: agent running spinners
-      local st; st="$(_status_fragment "$1")"
+    if (( beat % 4 == 0 )); then # every ~2s: spinners + sidebar titles
+      local st ti
+      ti="$(_titles_sig)"
+      if [[ "${ti}" != "${ti_last}" ]]; then
+        sse_patch "$(_sb_ul "$1")" || exit 0
+        ti_last="${ti}"
+      fi
+      st="$(_status_fragment "$1")"
       if [[ "${st}" != "${st_last}" ]]; then
         sse_patch "${st}" || exit 0
         st_last="${st}"

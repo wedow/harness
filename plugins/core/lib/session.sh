@@ -11,6 +11,8 @@ id=${id}
 model=${HARNESS_MODEL}
 provider=${HARNESS_PROVIDER}
 created=$(date -Iseconds)
+title=
+title_locked=
 cwd=${cwd}
 parent=${HARNESS_PARENT_SESSION:-}
 EOF

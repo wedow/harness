@@ -30,6 +30,18 @@ case "${subcmd}" in
       echo "${HARNESS_SESSIONS}"
     fi
     ;;
+  title) # harness session title <id> <text...> — sets and locks the title
+    id="${1:-}"; shift || true; text="${*:-}"
+    [[ -n "${id}" && -n "${text}" ]] || _die "usage: harness session title <id> <text...>"
+    conf="${HARNESS_SESSIONS}/${id}/session.conf"
+    [[ -f "${conf}" ]] || _die "session '${id}' not found"
+    tmp="$(mktemp)"
+    awk -v t="${text}" 'BEGIN{tn=0;ln=0}
+      /^title=/{print "title=" t; tn=1; next}
+      /^title_locked=/{print "title_locked=true"; ln=1; next}
+      {print} END{if(!tn)print "title=" t; if(!ln)print "title_locked=true"}' "${conf}" > "${tmp}" && mv "${tmp}" "${conf}"
+    echo "title locked: ${text}"
+    ;;
   *)
     _die "unknown session command: ${subcmd}"
     ;;

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# 40-title — inject the session title into the assembled system prompt.
+# Pipeline hook (assemble stage): reads partial payload on stdin.
+set -euo pipefail
+
+payload="$(cat)"
+
+title=""
+if [[ -f "${HARNESS_SESSION:-}/session.conf" ]]; then
+  title="$(sed -n 's/^title=//p' "${HARNESS_SESSION}/session.conf" | head -1)"
+fi
+
+if [[ -n "${title}" ]]; then
+  printf '%s' "${payload}" | jq --arg t "${title}" \
+    '. + {system: ((.system // "") + "\n\n## session\n\nsession title: " + $t)}'
+else
+  printf '%s' "${payload}"
+fi

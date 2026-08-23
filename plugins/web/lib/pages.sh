@@ -121,7 +121,7 @@ _session_page() { # $1 = id, $2 = meta line
   local id=$1
   _head "${id}" <<EOF
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
-<div id="view" data-on-load="@get('/s/$(html_escape "${id}")/events')">
+<div id="view" data-init="@get('/s/$(html_escape "${id}")/events')">
 $(_transcript "$1")
 </div>
 <form method="post" action="/s/$(html_escape "${id}")">

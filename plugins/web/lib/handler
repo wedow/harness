@@ -14,6 +14,7 @@ declare -A HTTP_HEADERS=()
 read -r -t 10 -a REQ_LINE || { exit 0; }
 METHOD="${REQ_LINE[0]:-}"
 RPATH="${REQ_LINE[1]:-/}"
+RPATH="${RPATH%%\?*}" # strip query string
 while IFS= read -r -t 10 h; do
   h="${h%$'\r'}"; [[ -z "${h}" ]] && break
   key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"

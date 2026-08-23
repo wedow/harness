@@ -41,9 +41,12 @@ respond_sse() {
 # morphs it into the DOM by top-level element id.
 # socat execs us with SIGPIPE ignored, so detect dead sockets via the
 # write error instead: every printf returns nonzero on EPIPE.
-sse_patch() { # $1 = fragment html
+sse_patch() { # $1 = fragment html, $2 = "append" to add new elements (default morphs by id)
   local line
   { printf 'event: datastar-patch-elements\n'; } 2>/dev/null || return 1
+  if [[ "${2:-}" == "append" ]]; then
+    { printf 'data: selector body\ndata: mode append\n'; } 2>/dev/null || return 1
+  fi
   while IFS= read -r line || [[ -n "${line}" ]]; do
     { printf 'data: elements %s\n' "${line}"; } 2>/dev/null || return 1
   done < <(printf '%s' "$1" 2>/dev/null)

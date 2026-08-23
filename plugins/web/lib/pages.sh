@@ -31,6 +31,10 @@ button{padding:.5rem 1rem}
 #sidebar a{display:block;padding:.35rem .5rem;border-radius:4px;text-decoration:none;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sidebar a.here{background:#dde7f5}
 #menu{position:fixed;top:.75rem;left:.75rem;z-index:15;width:2.4rem;height:2.4rem;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer}
+#sbhead{display:flex;justify-content:space-between;align-items:center;font-weight:600}
+#sbclose{border:none;background:none;cursor:pointer;padding:.25rem .5rem}
+#backdrop{position:fixed;inset:0;background:rgba(0,0,0,.35);z-index:19}
+#backdrop[hidden]{display:none}
 @media (min-width:900px){
   #menu{display:none}
   #sidebar{transform:none}
@@ -52,8 +56,12 @@ CSS
 <script>
 (() => {
   const sb = document.getElementById('sidebar');
-  document.getElementById('menu').onclick = () => sb.classList.toggle('open');
-  sb.addEventListener('click', e => { if (e.target.closest('a')) sb.classList.remove('open'); });
+  const bd = document.getElementById('backdrop');
+  const close = () => { sb.classList.remove('open'); bd.hidden = true; };
+  document.getElementById('menu').onclick = () => { sb.classList.add('open'); bd.hidden = false; };
+  document.getElementById('sbclose').onclick = close;
+  bd.onclick = close;
+  sb.addEventListener('click', e => { if (e.target.closest('a')) close(); });
 })();
 </script>
 JS
@@ -67,7 +75,9 @@ _sidebar() { # $1 = current session id
     rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(html_escape "${s}")</a></li>"
   done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
   printf '<button id="menu" aria-label="toggle sidebar">&#9776;</button>'
+  printf '<div id="backdrop" hidden></div>'
   printf '<nav id="sidebar">'
+  printf '<div id="sbhead"><span>sessions</span><button id="sbclose" aria-label="close sidebar">&#10005;</button></div>'
   printf '<form method="post" action="/new"><input type="text" name="message" placeholder="new session…"><button>+</button></form>'
   printf '<ul>%s</ul>' "${rows}"
   printf '</nav>'
@@ -110,17 +120,37 @@ handle_session() { # $1 = id
 
 # Live view: any change to the session on disk triggers a full re-render,
 # pushed as a datastar patch over SSE.
+# SSE hub. Three push sources:
+#   1. any session file change  -> full transcript re-render
+#   2. web plugin file change   -> reload nudge (live UI edits)
+#   3. $dir/.ui.*.fifo          -> agent-pushed fragments, one HTML line each.
+# Fifos are per-connection and removed when the client disconnects.
 handle_events() { # $1 = id
-  local dir="${HARNESS_SESSIONS}/$1" sig last=""
+  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
+  find "${dir}" -name '.ui.*.fifo' -mmin +30 -delete 2>/dev/null # stale ones from killed handlers
+  fifo="${dir}/.ui.$$.fifo"
+  mkfifo "${fifo}" 2>/dev/null
+  trap 'rm -f "${fifo}"' EXIT
+  exec 7<>"${fifo}"
   while :; do
+    if IFS= read -r -t 0.5 line <&7; then
+      [[ -n "${line}" ]] && { sse_patch "${line}" append || exit 0; }
+      continue
+    fi
     sig="$(_dir_sig "${dir}")"
     if [[ "${sig}" != "${last}" ]]; then
       sse_patch "$(_transcript "$1")" || exit 0
       last="${sig}"
     fi
-    sleep 0.5
+    ui_sig="$(_dir_sig "${HARNESS_ROOT}/plugins/web")"
+    if [[ "${ui_sig}" != "${ui_last}" ]]; then
+      if [[ -n "${ui_last}" ]]; then
+        sse_patch '<div id="uireload" hidden data-init="location.reload()"></div>' append || exit 0
+      fi
+      ui_last="${ui_sig}"
+    fi
   done
 }
 

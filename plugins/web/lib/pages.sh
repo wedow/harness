@@ -30,6 +30,8 @@ button{padding:.5rem 1rem}
 #sidebar ul{list-style:none;padding:0;margin:1rem 0 0}
 #sidebar a{display:block;padding:.35rem .5rem;border-radius:4px;text-decoration:none;color:#222;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #sidebar a.here{background:#dde7f5}
+.spin{display:inline-block;animation:spin 1s linear infinite;color:#0866ff}
+@keyframes spin{to{transform:rotate(360deg)}}
 #menu{position:fixed;top:.75rem;left:.75rem;z-index:15;width:2.4rem;height:2.4rem;border:1px solid #ccc;background:#fff;border-radius:4px;cursor:pointer}
 #sbhead{display:flex;justify-content:space-between;align-items:center;font-weight:600}
 #sbclose{border:none;background:none;cursor:pointer;padding:.25rem .5rem}
@@ -86,11 +88,41 @@ JS
   printf '</body></html>'
 }
 
+# Agent-running probe: the agent subshell holds fd 9 on .lock for its whole
+# lifetime, so an open-fd check (fuser, no locking) is the signal. Never use
+# flock -n to probe — it could steal the lock and drop a queued turn.
+_agent_running() { # $1 = session dir
+  fuser "${1}/.lock" >/dev/null 2>&1
+}
+
+_sb_spin() { # $1 = session id — sidebar spinner span (morph target for live updates)
+  if _agent_running "${HARNESS_SESSIONS}/$1"; then
+    printf '<span id="sb-%s" class="spin">&#10227;</span>' "$1"
+  else
+    printf '<span id="sb-%s" hidden></span>' "$1"
+  fi
+}
+
+# One patch morphing #agent-status and every sidebar spinner. Targets are
+# rendered (possibly hidden) on every session page, so plain id morph works.
+_status_fragment() { # $1 = current session id
+  local cur=$1 out s
+  if _agent_running "${HARNESS_SESSIONS}/${cur}"; then
+    out='<div id="agent-status" class="meta">&#10227; agent working…</div>'
+  else
+    out='<div id="agent-status" hidden></div>'
+  fi
+  while IFS= read -r s; do
+    out+="$(_sb_spin "${s}")"
+  done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
+  printf '%s' "${out}"
+}
+
 _sidebar() { # $1 = current session id
   local id rows="" s
   while IFS= read -r s; do
     [[ -d "${HARNESS_SESSIONS}/${s}" ]] || continue
-    rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(html_escape "${s}")</a></li>"
+    rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(html_escape "${s}")</a>$(_sb_spin "${s}")</li>"
   done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
   printf '<button id="menu" aria-label="toggle sidebar">&#9776;</button>'
   printf '<div id="backdrop" hidden></div>'
@@ -147,7 +179,7 @@ handle_session() { # $1 = id
 # Each connection gets its own fifo under .ui/ so sends can fan out over
 # the whole directory; fifos are removed when the client disconnects.
 handle_events() { # $1 = id
-  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line beat=0
+  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line beat=0 st_last=""
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
   sse_patch '<div id="hb" hidden></div>' # initial beat so the watchdog arms immediately
@@ -166,6 +198,13 @@ handle_events() { # $1 = id
     if [[ "${sig}" != "${last}" ]]; then
       sse_patch "$(_transcript "$1")" || exit 0
       last="${sig}"
+    fi
+    if (( beat % 4 == 0 )); then # every ~2s: agent running spinners
+      local st; st="$(_status_fragment "$1")"
+      if [[ "${st}" != "${st_last}" ]]; then
+        sse_patch "${st}" || exit 0
+        st_last="${st}"
+      fi
     fi
     if (( ++beat % 30 == 0 )); then # every ~15s (30 x 0.5s)
       sse_patch "<div id=\"hb\" hidden data-t=\"$(date +%s)\"></div>" || exit 0
@@ -220,10 +259,19 @@ _launch_agent() { # $1 = session id, $2 = message
   ) 9>"${dir}/.lock" &>/dev/null &
 }
 
+_agent_status_html() { # $1 = id — static #agent-status element (morph target)
+  if _agent_running "${HARNESS_SESSIONS}/$1"; then
+    printf '<div id="agent-status" class="meta">&#10227; agent working…</div>'
+  else
+    printf '<div id="agent-status" hidden></div>'
+  fi
+}
+
 _session_page() { # $1 = id, $2 = meta line
   local id=$1
   _head "${id}" "${id}" <<EOF
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
+$(_agent_status_html "${id}")
 <div id="hb" hidden></div>
 <div id="view" data-init="@get('/s/$(html_escape "${id}")/events', {retry: 'always', retryMaxCount: 99999, openWhenHidden: true})">
 <div id="scroll">

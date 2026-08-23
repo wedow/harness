@@ -132,14 +132,33 @@ EOF
 }
 
 # Full transcript fragment. Top-level element id lets datastar morph it in place.
+# Full transcript fragment. Top-level element id lets datastar morph it in place.
+# One awk pass over all message files — no per-message subprocess forks.
 _transcript() { # $1 = id
-  local dir="${HARNESS_SESSIONS}/$1" f role body out=""
-  while IFS= read -r f; do
-    role="$(html_escape "$(sed -n 's/^role: //p' "${f}" | head -1)")"
-    body="$(awk 'NR>1 && /^---/{p=1;next} p' "${f}" | head -c 100000)"
-    out+="<div class=\"msg ${role}\"><div class=\"meta\">${role}</div><pre>$(html_escape "${body}")</pre></div>"
-  done < <(ls -1 "${dir}/messages"/*.md 2>/dev/null | sort)
-  printf '<div id="transcript">%s</div>' "${out:-<p class=\"meta\">(no messages yet)</p>}"
+  local dir="${HARNESS_SESSIONS}/$1"
+  ls "${dir}/messages"/*.md >/dev/null 2>&1 || {
+    printf '<div id="transcript"><p class="meta">(no messages yet)</p></div>'
+    return
+  }
+  awk '
+    function esc(s, t) {
+      t = s
+      gsub(/&/, "\\&amp;", t); gsub(/</, "\\&lt;", t)
+      gsub(/>/, "\\&gt;", t);  gsub(/"/, "\\&quot;", t)
+      return t
+    }
+    BEGIN { printf "<div id=\"transcript\">" }
+    FNR == 1 { sep = 0; role = ""; open = 0; body = "" }
+    !open && $0 == "---" { sep++; if (sep == 2) open = 1; next }
+    !open && /^role: / { role = substr($0, 7); next }
+    !open { next }
+    { body = body $0 "\n" }
+    ENDFILE {
+      if (length(body) > 100000) body = substr(body, 1, 100000)
+      printf "<div class=\"msg %s\"><div class=\"meta\">%s</div><pre>%s</pre></div>", esc(role), esc(role), esc(body)
+    }
+    END { print "</div>" }
+  ' "${dir}/messages"/*.md
 }
 
 _dir_sig() { # fingerprint of a session dir: any file change (size or mtime)

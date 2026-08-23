@@ -62,6 +62,24 @@ CSS
   document.getElementById('sbclose').onclick = close;
   bd.onclick = close;
   sb.addEventListener('click', e => { if (e.target.closest('a')) close(); });
+  // draft preservation: survive reloads (incl. live-UI reload nudges) and tab close
+  const inp = document.querySelector('#main form input[name=message]');
+  if (inp) {
+    const k = 'draft:' + location.pathname;
+    const saved = localStorage.getItem(k);
+    if (saved && !inp.value) { inp.value = saved; inp.focus(); }
+    inp.addEventListener('input', () => localStorage.setItem(k, inp.value));
+    inp.form.addEventListener('submit', () => localStorage.removeItem(k));
+  }
+  // stream watchdog: heartbeats morph #hb; if they stop or datastar gives
+  // up, reload to reconnect and resync (drafts survive via localStorage)
+  const hb = document.getElementById('hb');
+  if (hb) {
+    let lastBeat = Date.now();
+    new MutationObserver(() => { lastBeat = Date.now(); }).observe(hb, {attributes: true, attributeFilter: ['data-t']});
+    setInterval(() => { if (Date.now() - lastBeat > 45000) location.reload(); }, 5000);
+    document.addEventListener('datastar-fetch', e => { if (e.detail?.type === 'retries-failed') location.reload(); });
+  }
 })();
 </script>
 JS
@@ -123,14 +141,19 @@ handle_session() { # $1 = id
 # SSE hub. Three push sources:
 #   1. any session file change  -> full transcript re-render
 #   2. web plugin file change   -> reload nudge (live UI edits)
-#   3. $dir/.ui.*.fifo          -> agent-pushed fragments, one HTML line each.
-# Fifos are per-connection and removed when the client disconnects.
+#   3. heartbeat every 15s      -> keeps proxies honest and lets the client
+#                                 watchdog detect a dead stream and reload
+#   3. $dir/.ui/*.fifo        -> agent-pushed fragments, one HTML line each.
+# Each connection gets its own fifo under .ui/ so sends can fan out over
+# the whole directory; fifos are removed when the client disconnects.
 handle_events() { # $1 = id
-  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line
+  local dir="${HARNESS_SESSIONS}/$1" sig last="" ui_sig ui_last="" fifo line beat=0
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
-  find "${dir}" -name '.ui.*.fifo' -mmin +30 -delete 2>/dev/null # stale ones from killed handlers
-  fifo="${dir}/.ui.$$.fifo"
+  sse_patch '<div id="hb" hidden></div>' # initial beat so the watchdog arms immediately
+  mkdir -p "${dir}/.ui" 2>/dev/null
+  find "${dir}/.ui" -name '*.fifo' -mmin +30 -delete 2>/dev/null # stale ones from killed handlers
+  fifo="${dir}/.ui/$$.fifo"
   mkfifo "${fifo}" 2>/dev/null
   trap 'rm -f "${fifo}"' EXIT
   exec 7<>"${fifo}"
@@ -143,6 +166,9 @@ handle_events() { # $1 = id
     if [[ "${sig}" != "${last}" ]]; then
       sse_patch "$(_transcript "$1")" || exit 0
       last="${sig}"
+    fi
+    if (( ++beat % 30 == 0 )); then # every ~15s (30 x 0.5s)
+      sse_patch "<div id=\"hb\" hidden data-t=\"$(date +%s)\"></div>" || exit 0
     fi
     ui_sig="$(_dir_sig "${HARNESS_ROOT}/plugins/web")"
     if [[ "${ui_sig}" != "${ui_last}" ]]; then
@@ -198,7 +224,8 @@ _session_page() { # $1 = id, $2 = meta line
   local id=$1
   _head "${id}" "${id}" <<EOF
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
-<div id="view" data-init="@get('/s/$(html_escape "${id}")/events')">
+<div id="hb" hidden></div>
+<div id="view" data-init="@get('/s/$(html_escape "${id}")/events', {retry: 'always', retryMaxCount: 99999, openWhenHidden: true})">
 <div id="scroll">
 $(_transcript "$1")
 </div>

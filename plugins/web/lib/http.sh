@@ -37,6 +37,16 @@ respond_sse() {
   end_headers
 }
 
+# One datastar-patch-elements event carrying a full fragment. Datastar
+# morphs it into the DOM by top-level element id.
+sse_patch() { # $1 = fragment html
+  printf 'event: datastar-patch-elements\n'
+  printf '%s' "$1" | while IFS= read -r l || [[ -n "${l}" ]]; do
+    printf 'data: elements %s\n' "${l}"
+  done
+  printf '\n'
+}
+
 html_escape() {
   printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
 }

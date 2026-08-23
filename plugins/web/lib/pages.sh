@@ -1,4 +1,5 @@
-# pages.sh — route handlers. Pure server-rendered HTML, no assets.
+# pages.sh — route handlers. Server-rendered HTML; the only script is the
+# vendored datastar bundle, which morphs full-view fragments we push over SSE.
 # Requires http.sh sourced; HARNESS_SESSIONS and _new_session (via handler).
 
 _HS="$HARNESS_ROOT/bin/harness"
@@ -16,14 +17,22 @@ body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:2rem auto;padding
 form{display:flex;gap:.5rem;margin:1rem 0}
 input[type=text]{flex:1;padding:.5rem;border:1px solid #ccc;border-radius:4px}
 button{padding:.5rem 1rem}
-#live{color:#555}
 CSS
-  printf '</style></head><body>'
+  printf '</style>'
+  printf '<script type="module" src="/datastar.js"></script>'
+  printf '</head><body>'
   cat
   printf '</body></html>'
 }
 
 # ---------------------------------------------------------------- routes --
+handle_asset() { # $1 = file name under plugins/web/public
+  local f="${HARNESS_ROOT}/plugins/web/public/$1"
+  [[ -f "${f}" ]] || { handle_404; return; }
+  HEADERS+=("Content-Type: text/javascript")
+  BODY="$(<"${f}")"
+}
+
 handle_home() {
   local id rows=""
   while IFS= read -r id; do
@@ -48,7 +57,23 @@ handle_session() { # $1 = id
   local meta
   meta="$(grep -hE '^(model|provider)=' "${dir}/session.conf" 2>/dev/null | tr '\n' ' ')"
   HEADERS+=("Content-Type: text/html; charset=utf-8")
-  BODY="$(_transcript_html "$1" "${dir}" "${meta}")"
+  BODY="$(_session_page "$1" "${meta}")"
+}
+
+# Live view: any change to the session on disk triggers a full re-render,
+# pushed as a datastar patch over SSE.
+handle_events() { # $1 = id
+  local dir="${HARNESS_SESSIONS}/$1" sig last=""
+  [[ -d "${dir}" ]] || { handle_404; return; }
+  respond_sse
+  while :; do
+    sig="$(_dir_sig "${dir}")"
+    if [[ "${sig}" != "${last}" ]]; then
+      sse_patch "$(_transcript "$1")"
+      last="${sig}"
+    fi
+    sleep 0.5
+  done
 }
 
 handle_new() {
@@ -68,27 +93,6 @@ handle_send() { # $1 = session id, message from form body
   _launch_agent "$1" "${msg}"
   STATUS=303
   HEADERS+=("Location: /s/$1")
-}
-
-handle_stream() { # $1 = session id — SSE translation of .stream JSONL
-  local dir="${HARNESS_SESSIONS}/$1" ev tailpid i
-  [[ -d "${dir}" ]] || { handle_404; return; }
-  respond_sse
-  # wait briefly for the stream file (agent may not have created it yet)
-  for (( i=0; i<50; i++ )); do
-    [[ -e "${dir}/.stream" ]] && break
-    sleep 0.1; printf ': hb\n\n'
-  done
-  exec 5< <(exec tail -c +1 -f "${dir}/.stream" 2>/dev/null)
-  tailpid=$!
-  while IFS= read -r -t 15 ev <&5; do
-    [[ -n "${ev}" ]] || continue
-    printf 'data: %s\n\n' "${ev}"
-    [[ "$(jq -r '.type // empty' <<<"${ev}" 2>/dev/null)" == done ]] && break
-  done
-  # heartbeat while quiet; exit once tail is gone
-  while kill -0 "${tailpid}" 2>/dev/null; do printf ': hb\n\n'; sleep 15; done
-  exit 0
 }
 
 handle_404() { STATUS=404; HEADERS+=("Content-Type: text/plain"); BODY="not found"; }
@@ -113,31 +117,31 @@ _launch_agent() { # $1 = session id, $2 = message
   ) 9>"${dir}/.lock" &>/dev/null &
 }
 
-_transcript_html() { # $1 = id, $2 = dir, $3 = meta line
-  local id=$1 dir=$2 meta=$3 f role body out=""
-  while IFS= read -r f; do
-    role="$(sed -n 's/^role: //p' "${f}" | head -1)"
-    body="$(awk 'NR>1 && /^---/{p=1;next} p' "${f}" | head -c 100000)"
-    out+="<div class=\"msg ${role}\"><div class=\"meta\">${role}</div><pre>$(html_escape "${body}")</pre></div>"
-  done < <(ls -1 "${dir}/messages"/*.md 2>/dev/null | sort)
+_session_page() { # $1 = id, $2 = meta line
+  local id=$1
   _head "${id}" <<EOF
-<p class="meta">$(html_escape "${id}") $(html_escape "${meta}") <a href="/">← all sessions</a></p>
-${out:-'<p class="meta">(no messages yet)</p>'}
-<div id="live"></div>
+<p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
+<div id="view" data-on-load="@get('/s/$(html_escape "${id}")/events')">
+$(_transcript "$1")
+</div>
 <form method="post" action="/s/$(html_escape "${id}")">
   <input type="text" name="message" placeholder="reply…" required autofocus>
   <button>send</button>
 </form>
-<script>
-const live = document.getElementById('live');
-const es = new EventSource('/s/$(html_escape "${id}")/stream');
-es.onmessage = e => {
-  const ev = JSON.parse(e.data);
-  if (ev.type === 'done') { es.close(); return; }
-  if (ev.type === 'text') live.append(ev.text);
-  if (ev.type === 'tool_start') live.append('\\n[' + ev.name + '] ');
-  if (ev.type === 'error') live.append('\\n[error] ' + ev.message);
-};
-</script>
 EOF
+}
+
+# Full transcript fragment. Top-level element id lets datastar morph it in place.
+_transcript() { # $1 = id
+  local dir="${HARNESS_SESSIONS}/$1" f role body out=""
+  while IFS= read -r f; do
+    role="$(html_escape "$(sed -n 's/^role: //p' "${f}" | head -1)")"
+    body="$(awk 'NR>1 && /^---/{p=1;next} p' "${f}" | head -c 100000)"
+    out+="<div class=\"msg ${role}\"><div class=\"meta\">${role}</div><pre>$(html_escape "${body}")</pre></div>"
+  done < <(ls -1 "${dir}/messages"/*.md 2>/dev/null | sort)
+  printf '<div id="transcript">%s</div>' "${out:-<p class=\"meta\">(no messages yet)</p>}"
+}
+
+_dir_sig() { # fingerprint of a session dir: any file change (size or mtime)
+  find "$1" -type f -printf '%p %s %T@\n' 2>/dev/null | sort | md5sum
 }

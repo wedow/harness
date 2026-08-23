@@ -27,7 +27,8 @@ fi
 case "${METHOD}" in
   GET)
     if [[ "${RPATH}" == "/" ]]; then handle_home
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)/stream$ ]]; then handle_stream "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" == "/datastar.js" ]]; then handle_asset datastar.js
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/events$ ]]; then handle_events "${BASH_REMATCH[1]}"
     elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_session "${BASH_REMATCH[1]}"
     else handle_404; fi ;;
   POST)

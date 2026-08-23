@@ -34,6 +34,7 @@ Each connection is a long-lived handler process that pushes:
    hard-reloads and picks up new markup/CSS. Editing the plugin is hot.
 3. **Heartbeat** — every ~15s a hidden `<div id="hb" data-t="...">` morph.
    The client watchdog reloads if beats stop for 45s (server death etc).
+4. **Agent-running spinners** — every ~2s the hub probes each session `.lock` with `fuser` (open-fd check, no locking — an `flock -n` probe could steal the lock and drop a queued turn) and morphs `#agent-status` plus every sidebar spinner. The lock is held open for the agent subshell's whole lifetime, so "lock open" == "turn in flight".
 4. **Agent channel** — lines written to `$SESSION/.ui/*.fifo` are wrapped
    as append-mode patch events. One fifo per connection, created on
    connect, removed on disconnect. See `prompt.md`.

@@ -30,6 +30,11 @@ per event). No fifo directory means nobody is watching — write nothing
 and move on; writes to a missing fifo just error, and stale fifos (dead
 handlers) are swept after 30 minutes, so guard with a quick `ls`.
 
+## agent running indicator
+
+The UI already shows spinners (status line + sidebar) while your turn runs —
+nothing to do. They clear automatically when your loop ends.
+
 ## notes
 
 - The user's transcript also re-renders automatically whenever any file

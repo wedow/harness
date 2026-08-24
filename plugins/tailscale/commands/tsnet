@@ -63,12 +63,41 @@ case "${1:-status}" in
     state="$(tsc status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null || echo NeedsLogin)"
     if [[ "${state}" == "NeedsLogin" || "${state}" == "NoState" ]]; then
       key="$(authkey)"
-      [[ -n "${key}" ]] || _die "no auth key; run: hs auth set tailscale (or export TS_AUTHKEY)"
+      [[ -n "${key}" ]] || _die "no auth key; run: hs tsnet auth-url (or hs auth set tailscale)"
       # shellcheck disable=SC2086
       tsc up --authkey="${key}" --hostname="${NODE_NAME}" >/dev/null
     fi
     tsc serve --bg "${BACKEND}" >/dev/null
     echo "serving ${BACKEND} at https://$(node_url)/"
+    ;;
+  auth-url)
+    # Interactive alternative to an auth key: print the login URL, wait
+    # for the user to complete OAuth in their browser, then serve.
+    start_daemon
+    login_out="${STATE}/login.out"
+    tsc login --hostname="${NODE_NAME}" >"${login_out}" 2>&1 &
+    login_pid=$!
+    url=""
+    for _ in $(seq 1 50); do
+      url="$(grep -oE 'https://login\.tailscale\.com/a/[a-z0-9]+' "${login_out}" || true)"
+      [[ -n "${url}" ]] && break
+      kill -0 "${login_pid}" 2>/dev/null || break
+      sleep 0.2
+    done
+    if [[ -z "${url}" ]]; then
+      wait "${login_pid}" || true
+      cat "${login_out}" >&2
+      _die "no auth URL produced (already logged in? try: hs tsnet up)"
+    fi
+    echo "open to join this node to your tailnet:"
+    echo "  ${url}"
+    echo "waiting for login..."
+    if wait "${login_pid}"; then
+      tsc serve --bg "${BACKEND}" >/dev/null
+      echo "serving ${BACKEND} at https://$(node_url)/"
+    else
+      _die "login failed; see ${login_out}"
+    fi
     ;;
 
   down)
@@ -145,6 +174,6 @@ EOF
     ;;
 
   *)
-    _die "usage: tsnet <up|down|status|url|install|uninstall>"
+    _die "usage: tsnet <auth-url|up|down|status|url|install|uninstall>"
     ;;
 esac

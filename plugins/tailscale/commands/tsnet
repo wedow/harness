@@ -12,12 +12,16 @@ case "${1:-}" in --describe) echo "manage a dedicated tailnet node for the web U
 
 source "${HARNESS_ROOT}/bin/harness"
 
+command -v tailscale >/dev/null && command -v tailscaled >/dev/null ||
+  _die "tailscale is not installed (need tailscale + tailscaled on PATH) — see https://tailscale.com/download"
+
 SOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/harness-tsnet"
 SOCK="${SOCK_DIR}/tailscaled.sock"
 STATE="${HARNESS_HOME}/tsnet"
 LOG="${STATE}/tailscaled.log"
 PID="${STATE}/tailscaled.pid"
-HOSTNAME="${TSNET_HOSTNAME:-harness-web}"
+# node name: <host>-web (wayreth -> wayreth-web) unless overridden
+NODE_NAME="${TSNET_HOSTNAME:-${HOSTNAME%%.*}-web}"
 BACKEND="${TSNET_BACKEND:-127.0.0.1:8080}"
 
 tsc() { tailscale --socket="${SOCK}" "$@"; }
@@ -61,7 +65,7 @@ case "${1:-status}" in
       key="$(authkey)"
       [[ -n "${key}" ]] || _die "no auth key; run: hs auth set tailscale (or export TS_AUTHKEY)"
       # shellcheck disable=SC2086
-      tsc up --authkey="${key}" --hostname="${HOSTNAME}" >/dev/null
+      tsc up --authkey="${key}" --hostname="${NODE_NAME}" >/dev/null
     fi
     tsc serve --bg "${BACKEND}" >/dev/null
     echo "serving ${BACKEND} at https://$(node_url)/"
@@ -91,14 +95,14 @@ case "${1:-status}" in
   install)
     UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
     mkdir -p "${UNIT_DIR}"
-    [[ -x /usr/bin/tailscaled ]] || _die "expected tailscaled at /usr/bin/tailscaled"
+    TAILSCALED="$(command -v tailscaled)"
 
     cat >"${UNIT_DIR}/harness-tsnet.service" <<EOF
 [Unit]
 Description=harness tsnet node (dedicated tailscaled for the web UI)
 
 [Service]
-ExecStart=/usr/bin/tailscaled --tun=userspace-networking --socket=${SOCK} --statedir=${STATE}
+ExecStart=${TAILSCALED} --tun=userspace-networking --socket=${SOCK} --statedir=${STATE}
 Restart=on-failure
 RuntimeDirectory=harness-tsnet
 

@@ -5,6 +5,13 @@ unprivileged `tailscaled` in userspace-networking mode (own socket +
 state, no TUN, no root), separate from the machine's main node. Inbound
 traffic arrives via `tailscale serve`, which terminates TLS in-process.
 
+## Requirements
+
+`tailscale` + `tailscaled` on PATH (all subcommands check and error with
+an install hint otherwise). Unit files are embedded templates generated
+at `hs tsnet install` time with absolute paths resolved on the host —
+nothing else is machine-specific.
+
 ## Setup
 
     hs auth set tailscale        # paste an auth key (or export TS_AUTHKEY)
@@ -23,7 +30,7 @@ need to start the daemon and web server.
 
 ## Env
 
-- `TSNET_HOSTNAME` (default `harness-web`)
+- `TSNET_HOSTNAME` — tailnet node name (default `<hostname>-web`, e.g. `wayreth-web`)
 - `TSNET_BACKEND` (default `127.0.0.1:8080`)
 - `TS_AUTHKEY` — auth key for `hs auth set tailscale`
 

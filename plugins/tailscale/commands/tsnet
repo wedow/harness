@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# tsnet — run the web UI as a dedicated tailnet node.
+#
+# A second, unprivileged tailscaled in userspace-networking mode (no TUN,
+# no root) with its own socket + state, so the node identity is separate
+# from the machine's main tailscaled. Inbound access is via
+# `tailscale serve`, which terminates TLS in-process — exactly what a
+# web server needs.
+set -euo pipefail
+
+case "${1:-}" in --describe) echo "manage a dedicated tailnet node for the web UI"; exit 0 ;; esac
+
+source "${HARNESS_ROOT}/bin/harness"
+
+SOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/harness-tsnet"
+SOCK="${SOCK_DIR}/tailscaled.sock"
+STATE="${HARNESS_HOME}/tsnet"
+LOG="${STATE}/tailscaled.log"
+PID="${STATE}/tailscaled.pid"
+HOSTNAME="${TSNET_HOSTNAME:-harness-web}"
+BACKEND="${TSNET_BACKEND:-127.0.0.1:8080}"
+
+tsc() { tailscale --socket="${SOCK}" "$@"; }
+
+daemon_pid() { [[ -f "${PID}" ]] && cat "${PID}" || true; }
+
+start_daemon() {
+  mkdir -p "${SOCK_DIR}" "${STATE}"
+  if pid="$(daemon_pid)"; [[ -n "${pid}" ]] && kill -0 "${pid}" 2>/dev/null; then
+    return 0
+  fi
+  command -v tailscaled >/dev/null || _die "required: tailscaled"
+  nohup tailscaled --tun=userspace-networking \
+    --socket="${SOCK}" --statedir="${STATE}" >"${LOG}" 2>&1 &
+  echo $! >"${PID}"
+  for _ in $(seq 1 50); do
+    [[ -S "${SOCK}" ]] && return 0
+    sleep 0.1
+  done
+  _die "tailscaled did not start; see ${LOG}"
+}
+
+stop_daemon() {
+  if pid="$(daemon_pid)"; [[ -n "${pid}" ]]; then
+    kill "${pid}" 2>/dev/null || true
+    rm -f "${PID}"
+  fi
+}
+
+authkey() {
+  jq -r '.tailscale[0].key // empty' "${HARNESS_HOME}/.auth.json" 2>/dev/null || true
+}
+
+node_url() { tsc status --json | jq -r '.Self.DNSName | rtrimstr(".")' 2>/dev/null || true; }
+
+case "${1:-status}" in
+  up)
+    start_daemon
+    state="$(tsc status --json 2>/dev/null | jq -r '.BackendState' 2>/dev/null || echo NeedsLogin)"
+    if [[ "${state}" == "NeedsLogin" || "${state}" == "NoState" ]]; then
+      key="$(authkey)"
+      [[ -n "${key}" ]] || _die "no auth key; run: hs auth set tailscale (or export TS_AUTHKEY)"
+      # shellcheck disable=SC2086
+      tsc up --authkey="${key}" --hostname="${HOSTNAME}" >/dev/null
+    fi
+    tsc serve --bg "${BACKEND}" >/dev/null
+    echo "serving ${BACKEND} at https://$(node_url)/"
+    ;;
+
+  down)
+    tsc down --accept-risk=lose-ssh >/dev/null 2>&1 || true
+    stop_daemon
+    echo "tsnet node stopped"
+    ;;
+
+  status)
+    if pid="$(daemon_pid)"; [[ -z "${pid}" ]] || ! kill -0 "${pid}" 2>/dev/null; then
+      echo "tsnet: not running"
+      exit 0
+    fi
+    tsc status
+    tsc serve status || true
+    ;;
+
+  url)
+    url="$(node_url)"
+    [[ -n "${url}" ]] || _die "node not up; run: hs tsnet up"
+    echo "https://${url}/"
+    ;;
+
+  install)
+    UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
+    mkdir -p "${UNIT_DIR}"
+    [[ -x /usr/bin/tailscaled ]] || _die "expected tailscaled at /usr/bin/tailscaled"
+
+    cat >"${UNIT_DIR}/harness-tsnet.service" <<EOF
+[Unit]
+Description=harness tsnet node (dedicated tailscaled for the web UI)
+
+[Service]
+ExecStart=/usr/bin/tailscaled --tun=userspace-networking --socket=${SOCK} --statedir=${STATE}
+Restart=on-failure
+RuntimeDirectory=harness-tsnet
+
+[Install]
+WantedBy=default.target
+EOF
+
+    # serve config persists in tailscaled state; the web server itself
+    # needs to be up too, so run it as its own unit.
+    cat >"${UNIT_DIR}/harness-web.service" <<EOF
+[Unit]
+Description=harness web UI
+After=harness-tsnet.service
+
+[Service]
+Environment=HARNESS_ROOT=${HARNESS_ROOT}
+Environment=HARNESS_HOME=${HARNESS_HOME}
+Environment=HARNESS_SESSIONS=${HARNESS_SESSIONS}
+ExecStart=${HARNESS_ROOT}/plugins/web/commands/serve ${BACKEND#*:}
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
+EOF
+
+    systemctl --user daemon-reload
+    systemctl --user enable --now harness-tsnet.service harness-web.service
+    echo "installed + started: harness-tsnet.service harness-web.service"
+    ;;
+
+  uninstall)
+    systemctl --user disable --now harness-tsnet.service harness-web.service 2>/dev/null || true
+    rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/harness-tsnet.service" \
+          "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/harness-web.service"
+    systemctl --user daemon-reload
+    echo "uninstalled"
+    ;;
+
+  *)
+    _die "usage: tsnet <up|down|status|url|install|uninstall>"
+    ;;
+esac

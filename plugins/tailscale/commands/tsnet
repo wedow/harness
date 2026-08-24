@@ -15,14 +15,19 @@ source "${HARNESS_ROOT}/bin/harness"
 command -v tailscale >/dev/null && command -v tailscaled >/dev/null ||
   _die "tailscale is not installed (need tailscale + tailscaled on PATH) — see https://tailscale.com/download"
 
+# node name: <host>-web (wayreth -> wayreth-web) unless overridden.
+# Everything (socket, state, unit names) is namespaced by node name so
+# multiple installs (e.g. AUR /usr/bin/hs + dev repo) can coexist — give
+# each its own TSNET_HOSTNAME (+ TSNET_BACKEND port).
+NODE_NAME="${TSNET_HOSTNAME:-${HOSTNAME%%.*}-web}"
 SOCK_DIR="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/harness-tsnet"
-SOCK="${SOCK_DIR}/tailscaled.sock"
-STATE="${HARNESS_HOME}/tsnet"
+SOCK="${SOCK_DIR}/${NODE_NAME}.sock"
+STATE="${HARNESS_HOME}/tsnet/${NODE_NAME}"
 LOG="${STATE}/tailscaled.log"
 PID="${STATE}/tailscaled.pid"
-# node name: <host>-web (wayreth -> wayreth-web) unless overridden
-NODE_NAME="${TSNET_HOSTNAME:-${HOSTNAME%%.*}-web}"
 BACKEND="${TSNET_BACKEND:-127.0.0.1:8080}"
+TSNET_UNIT="harness-tsnet-${NODE_NAME}"
+WEB_UNIT="harness-web-${NODE_NAME}"
 
 tsc() { tailscale --socket="${SOCK}" "$@"; }
 
@@ -126,9 +131,9 @@ case "${1:-status}" in
     mkdir -p "${UNIT_DIR}" "${HARNESS_HOME}/workspace"
     TAILSCALED="$(command -v tailscaled)"
 
-    cat >"${UNIT_DIR}/harness-tsnet.service" <<EOF
+    cat >"${UNIT_DIR}/${TSNET_UNIT}.service" <<EOF
 [Unit]
-Description=harness tsnet node (dedicated tailscaled for the web UI)
+Description=harness tsnet node ${NODE_NAME} (dedicated tailscaled)
 
 [Service]
 ExecStart=${TAILSCALED} --tun=userspace-networking --socket=${SOCK} --statedir=${STATE}
@@ -141,10 +146,10 @@ EOF
 
     # serve config persists in tailscaled state; the web server itself
     # needs to be up too, so run it as its own unit.
-    cat >"${UNIT_DIR}/harness-web.service" <<EOF
+    cat >"${UNIT_DIR}/${WEB_UNIT}.service" <<EOF
 [Unit]
-Description=harness web UI
-After=harness-tsnet.service
+Description=harness web UI (${NODE_NAME})
+After=${TSNET_UNIT}.service
 
 [Service]
 # Agents spawned by the web UI inherit this cwd; keep it a neutral
@@ -160,13 +165,18 @@ Restart=on-failure
 WantedBy=default.target
 EOF
 
+    # ExecStart pins whichever harness install ran `tsnet install`, so an
+    # AUR (/usr/bin/hs) node and a dev-repo node can run side by side.
     systemctl --user daemon-reload
-    systemctl --user enable --now harness-tsnet.service harness-web.service
-    echo "installed + started: harness-tsnet.service harness-web.service"
+    systemctl --user enable --now "${TSNET_UNIT}.service" "${WEB_UNIT}.service"
+    echo "installed + started: ${TSNET_UNIT}.service ${WEB_UNIT}.service"
+    echo "  from ${HARNESS_ROOT} (backend ${BACKEND})"
     ;;
 
   uninstall)
-    systemctl --user disable --now harness-tsnet.service harness-web.service 2>/dev/null || true
+    systemctl --user disable --now "${TSNET_UNIT}.service" "${WEB_UNIT}.service" 2>/dev/null || true
+    rm -f "${UNIT_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}/${TSNET_UNIT}.service" \
+          "${UNIT_DIR:-${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user}/${WEB_UNIT}.service"
     rm -f "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/harness-tsnet.service" \
           "${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user/harness-web.service"
     systemctl --user daemon-reload

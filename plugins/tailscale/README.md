@@ -33,7 +33,12 @@ need to start the daemon and web server.
 
 ## Env
 
-- `TSNET_HOSTNAME` — tailnet node name (default `<hostname>-web`, e.g. `wayreth-web`)
+- `TSNET_HOSTNAME` — tailnet node name (default `<hostname>-web`, e.g. `wayreth-web`).
+  Socket, state dir, and systemd unit names
+  (`harness-{tsnet,web}-<name>.service`) are all namespaced by it, so
+  multiple installs can coexist — e.g. the AUR `hs` and a dev checkout.
+  Give each its own `TSNET_HOSTNAME` and `TSNET_BACKEND` port. Units pin
+  whichever harness install ran `tsnet install`.
 - `TSNET_BACKEND` (default `127.0.0.1:8080`)
 - `TS_AUTHKEY` — auth key for `hs auth set tailscale`
 

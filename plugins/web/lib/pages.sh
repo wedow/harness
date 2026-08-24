@@ -89,6 +89,17 @@ CSS
 JS
   printf '</body></html>'
 }
+# Sidebar order = conversational activity: newest message wins. Never the
+# session dir's own mtime — the UI itself writes there (.ui fifos, serve.log,
+# .lock), which made merely opening a session bump it to the top.
+_session_order() {
+  local s m
+  for s in "${HARNESS_SESSIONS}"/*/; do
+    [[ -d "${s}messages" ]] || continue
+    m="$(stat -c %Y "${s}messages" 2>/dev/null || echo 0)"
+    printf '%s %s\n' "${m}" "${s%/}"
+  done | sort -rn | awk '{n=$NF; sub(/.*\//, "", n); print n}'
+}
 
 # Agent-running probe: the agent subshell holds fd 9 on .lock for its whole
 # lifetime, so an open-fd check (fuser, no locking) is the signal. Never use
@@ -116,7 +127,7 @@ _status_fragment() { # $1 = current session id
   fi
   while IFS= read -r s; do
     out+="$(_sb_spin "${s}")"
-  done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
+  done < <(_session_order | head -30)
   printf '%s' "${out}"
 }
 
@@ -131,7 +142,7 @@ _sb_ul() { # $1 = current session id
   while IFS= read -r s; do
     [[ -d "${HARNESS_SESSIONS}/${s}" ]] || continue
     rows+="<li><a href=\"/s/$(html_escape "${s}")\"$([[ "${s}" == "$1" ]] && printf ' class="here"')>$(_sb_label "${s}")</a>$(_sb_spin "${s}")</li>"
-  done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30)
+  done < <(_session_order | head -30)
   printf '<ul id="sblist">%s</ul>' "${rows}"
 }
 
@@ -147,7 +158,7 @@ _sidebar() { # $1 = current session id
 
 _titles_sig() { # fingerprint of the sidebar's titles — push #sblist when it changes
   local s
-  ls -1t "${HARNESS_SESSIONS}" 2>/dev/null | head -30 | while IFS= read -r s; do
+  _session_order | head -30 | while IFS= read -r s; do
     printf '%s:%s\n' "${s}" "$(sed -n 's/^title=//p' "${HARNESS_SESSIONS}/${s}/session.conf" 2>/dev/null)"
   done | md5sum
 }
@@ -165,7 +176,7 @@ handle_home() {
   while IFS= read -r id; do
     [[ -d "${HARNESS_SESSIONS}/${id}" ]] || continue
     rows+="<li><a href=\"/s/$(html_escape "$id")\">$(html_escape "$id")</a></li>"
-  done < <(ls -1t "${HARNESS_SESSIONS}" 2>/dev/null)
+  done < <(_session_order)
   HEADERS+=("Content-Type: text/html; charset=utf-8")
   BODY="$(_head "harness" <<EOF
 <h1>harness sessions</h1>

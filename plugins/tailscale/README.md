@@ -31,6 +31,15 @@ directory so agents spawned from the UI aren't tied to a project.
 The serve config persists in the node's state file, so the units only
 need to start the daemon and web server.
 
+## Config
+
+Persistent settings live in `~/.harness/tsnet/config`, one `key=value`
+per line (only `TSNET_HOSTNAME` and `TSNET_BACKEND` are honored; env
+vars beat the file, the file beats defaults):
+
+    mkdir -p ~/.harness/tsnet
+    echo 'TSNET_HOSTNAME=wayreth-agent' >> ~/.harness/tsnet/config
+
 ## Env
 
 - `TSNET_HOSTNAME` — tailnet node name (default `<hostname>-web`, e.g. `wayreth-web`).
@@ -39,7 +48,7 @@ need to start the daemon and web server.
   multiple installs can coexist — e.g. the AUR `hs` and a dev checkout.
   Give each its own `TSNET_HOSTNAME` and `TSNET_BACKEND` port. Units pin
   whichever harness install ran `tsnet install`.
-- `TSNET_BACKEND` (default `127.0.0.1:8080`)
+- `TSNET_BACKEND` (default `127.0.0.1:24601`)
 - `TS_AUTHKEY` — auth key for `hs auth set tailscale`
 
 State: `~/.harness/tsnet/` (tailscaled.state, logs). The auth key is

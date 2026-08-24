@@ -15,6 +15,13 @@ source "${HARNESS_ROOT}/bin/harness"
 command -v tailscale >/dev/null && command -v tailscaled >/dev/null ||
   _die "tailscale is not installed (need tailscale + tailscaled on PATH) — see https://tailscale.com/download"
 
+# Persistent overrides (env beats file beats default):
+#   ~/.harness/tsnet/config — lines like TSNET_HOSTNAME=foo TSNET_BACKEND=...
+while IFS='=' read -r k v; do
+  [[ "${k}" =~ ^TSNET_(HOSTNAME|BACKEND)$ && -z "${!k:-}" ]] && export "${k}=${v}"
+done < <(cat "${HARNESS_HOME}/tsnet/config" 2>/dev/null || true)
+
+
 # node name: <host>-web (wayreth -> wayreth-web) unless overridden.
 # Everything (socket, state, unit names) is namespaced by node name so
 # multiple installs (e.g. AUR /usr/bin/hs + dev repo) can coexist — give
@@ -25,7 +32,7 @@ SOCK="${SOCK_DIR}/${NODE_NAME}.sock"
 STATE="${HARNESS_HOME}/tsnet/${NODE_NAME}"
 LOG="${STATE}/tailscaled.log"
 PID="${STATE}/tailscaled.pid"
-BACKEND="${TSNET_BACKEND:-127.0.0.1:8080}"
+BACKEND="${TSNET_BACKEND:-127.0.0.1:24601}"
 TSNET_UNIT="harness-tsnet-${NODE_NAME}"
 WEB_UNIT="harness-web-${NODE_NAME}"
 

@@ -94,7 +94,7 @@ case "${1:-status}" in
 
   install)
     UNIT_DIR="${XDG_CONFIG_HOME:-${HOME}/.config}/systemd/user"
-    mkdir -p "${UNIT_DIR}"
+    mkdir -p "${UNIT_DIR}" "${HARNESS_HOME}/workspace"
     TAILSCALED="$(command -v tailscaled)"
 
     cat >"${UNIT_DIR}/harness-tsnet.service" <<EOF
@@ -118,6 +118,9 @@ Description=harness web UI
 After=harness-tsnet.service
 
 [Service]
+# Agents spawned by the web UI inherit this cwd; keep it a neutral
+# workspace, not $HOME or any one project.
+WorkingDirectory=${HARNESS_HOME}/workspace
 Environment=HARNESS_ROOT=${HARNESS_ROOT}
 Environment=HARNESS_HOME=${HARNESS_HOME}
 Environment=HARNESS_SESSIONS=${HARNESS_SESSIONS}

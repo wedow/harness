@@ -25,6 +25,9 @@ nothing else is machine-specific.
                                  #   harness-web.service    (hs serve)
     hs tsnet uninstall
 
+The web unit runs with cwd `~/.harness/workspace` — a neutral
+directory so agents spawned from the UI aren't tied to a project.
+
 The serve config persists in the node's state file, so the units only
 need to start the daemon and web server.
 

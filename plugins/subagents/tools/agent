@@ -22,7 +22,7 @@ _run_child_or_fail() {
   local ask="$1" err_file last_err
   err_file="$(mktemp)"
   _child_exit=0
-  _child_out="$(cd "${workdir}" && timeout "${HARNESS_AGENT_TIMEOUT:-600}" \
+  _child_out="$(cd "${workdir}" && timeout "${HARNESS_AGENT_TIMEOUT:-18000}" \
     env ${env_args[@]+"${env_args[@]}"} "${HARNESS_ROOT}/bin/harness" agent "${ask}" \
     2>"${err_file}")" || _child_exit=$?
   _child_err="$(cat "${err_file}")"
@@ -30,7 +30,7 @@ _run_child_or_fail() {
   if [[ "${_child_exit}" -ne 0 || -z "${_child_out}" ]]; then
     last_err="$(printf '%s\n' "${_child_err}" | tail -1)"
     if [[ "${_child_exit}" -eq 124 ]]; then
-      printf 'subagent timed out after %ss: %s\n' "${HARNESS_AGENT_TIMEOUT:-600}" "${last_err}"
+      printf 'subagent timed out after %ss: %s\n' "${HARNESS_AGENT_TIMEOUT:-18000}" "${last_err}"
     else
       printf 'subagent failed (exit %d): %s\n' "${_child_exit}" "${last_err}"
     fi
@@ -62,6 +62,10 @@ case "${1:-}" in
       "schema": {
         "type": "object",
         "description": "Optional JSON Schema. When set, the subagent is told to return only a JSON object matching it; the tool extracts that object (stripping any code fence), checks every required key is present, retries on mismatch, and returns compact validated JSON instead of prose."
+      },
+      "timeout": {
+        "type": "number",
+        "description": "Wall-clock budget in seconds for the subagent (optional, default 18000 = 5h; can also be set via HARNESS_AGENT_TIMEOUT). Applies to the whole run including schema retries."
       }
     },
     "required": ["prompt"]
@@ -91,6 +95,13 @@ JSON
     model="$(echo "${input}" | jq -r '.model // empty')"
     provider="$(echo "${input}" | jq -r '.provider // empty')"
     schema="$(echo "${input}" | jq -c '.schema // empty')"
+    # Per-call timeout override; env default is 5h (whole subagents are slow).
+    timeout_s="$(echo "${input}" | jq -r '.timeout // empty')"
+    if [[ -n "${timeout_s}" ]]; then
+      [[ "${timeout_s}" =~ ^[1-9][0-9]*$ ]] \
+        || { echo "agent: timeout must be a positive integer (seconds)" >&2; exit 1; }
+      export HARNESS_AGENT_TIMEOUT="${timeout_s}"
+    fi
     validation_schema="${schema}"
     if [[ -n "${schema}" && "$(echo "${schema}" | jq -r '.type // empty')" == "json_schema" ]]; then
       validation_schema="$(echo "${schema}" | jq -c '.schema')"
@@ -199,11 +210,11 @@ HEADER
       tmux select-layout -t "${pane_id}" tiled >/dev/null 2>&1 || true
       # Bound the pane-poll loop by the wall-clock timeout; kill the pane on
       # expiry so a hung subagent doesn't block the parent until manually killed.
-      deadline=$(( $(date +%s) + ${HARNESS_AGENT_TIMEOUT:-600} ))
+      deadline=$(( $(date +%s) + ${HARNESS_AGENT_TIMEOUT:-18000} ))
       while tmux list-panes -t "${pane_id}" &>/dev/null; do
         if (( $(date +%s) >= deadline )); then
           tmux kill-pane -t "${pane_id}" 2>/dev/null || true
-          echo "subagent timed out after ${HARNESS_AGENT_TIMEOUT:-600}s"
+          echo "subagent timed out after ${HARNESS_AGENT_TIMEOUT:-18000}s"
           exit 1
         fi
         sleep 0.2

@@ -145,7 +145,7 @@ if [[ -n "${stream_flag}" ]]; then
           # agent runs whole subagents (minutes, silent until done) —
           # the generic tool timeout kills it into an empty error result.
           # It self-bounds by HARNESS_AGENT_TIMEOUT internally.
-          agent) _tmo="${HARNESS_AGENT_TIMEOUT:-600}" ;;
+          agent) _tmo="${HARNESS_AGENT_TIMEOUT:-18000}" ;;
           *)     _tmo="${HARNESS_TOOL_TIMEOUT:-120}" ;;
         esac
         _r="$(cd "${_workdir}" && echo "${_input}" | timeout "${_tmo}" "${_bin}" --exec 2>&1)" && _e=false || _e=true

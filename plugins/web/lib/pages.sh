@@ -108,6 +108,43 @@ _agent_running() { # $1 = session dir
   fuser "${1}/.lock" >/dev/null 2>&1
 }
 
+# Queued-message count: a queued message waits in a `flock 9` child that
+# holds .lock open (fd 9 is also inherited by the running driver's whole
+# process tree, so raw fd-holder counting cannot distinguish waiters).
+_agent_queue_count() { # $1 = session dir
+  local p cmd c=0
+  for p in $(fuser "${1}/.lock" 2>/dev/null); do
+    [[ -r "/proc/${p}/cmdline" ]] || continue
+    cmd="$(tr '\0' ' ' < "/proc/${p}/cmdline")"
+    if [[ "${cmd}" == "flock 9 " ]]; then c=$(( c + 1 )); fi
+  done
+  echo "${c}"
+}
+
+# Live subagent count: child sessions with no exit marker AND a live process
+# running them (a killed pane leaves .started with no .exit_code forever).
+_subagent_count() { # $1 = session dir
+  local d name c=0
+  for d in "${1}/.harness/sessions"/*/; do
+    name="${d%/}"; name="${name##*/}"
+    if [[ -f "${d}/.exit_code" ]]; then continue; fi
+    if pgrep -f "sessions/${name}" >/dev/null 2>&1; then c=$(( c + 1 )); fi
+  done
+  echo "${c}"
+}
+
+# Status line while a turn is in flight, e.g. "agent working… · 2 subagents ·
+# 1 queued". Prints nothing and returns 1 when idle.
+_agent_status_line() { # $1 = session id
+  local dir="${HARNESS_SESSIONS}/$1" sub n out
+  _agent_running "${dir}" || return 1
+  sub="$(_subagent_count "${dir}")"
+  n="$(_agent_queue_count "${dir}")"
+  out="&#10227; agent working…"
+  if (( sub > 0 )); then out+=" · ${sub} subagent"; (( sub > 1 )) && out+="s"; fi
+  (( n > 0 )) && out+=" · ${n} queued"
+  printf '%s' "${out}"
+}
 _sb_spin() { # $1 = session id — sidebar spinner span (morph target for live updates)
   if _agent_running "${HARNESS_SESSIONS}/$1"; then
     printf '<span id="sb-%s" class="spin">&#10227;</span>' "$1"
@@ -120,8 +157,9 @@ _sb_spin() { # $1 = session id — sidebar spinner span (morph target for live u
 # rendered (possibly hidden) on every session page, so plain id morph works.
 _status_fragment() { # $1 = current session id
   local cur=$1 out s
-  if _agent_running "${HARNESS_SESSIONS}/${cur}"; then
-    out='<div id="agent-status" class="meta">&#10227; agent working…</div>'
+  local line; line="$(_agent_status_line "${cur}")"
+  if [[ -n "${line}" ]]; then
+    out="<div id="agent-status" class="meta">${line}</div>"
   else
     out='<div id="agent-status" hidden></div>'
   fi
@@ -299,8 +337,9 @@ _launch_agent() { # $1 = session id, $2 = message
 }
 
 _agent_status_html() { # $1 = id — static #agent-status element (morph target)
-  if _agent_running "${HARNESS_SESSIONS}/$1"; then
-    printf '<div id="agent-status" class="meta">&#10227; agent working…</div>'
+  local line; line="$(_agent_status_line "$1")"
+  if [[ -n "${line}" ]]; then
+    printf '<div id="agent-status" class="meta">%s</div>' "${line}"
   else
     printf '<div id="agent-status" hidden></div>'
   fi

@@ -290,7 +290,10 @@ _form_field() {
 _launch_agent() { # $1 = session id, $2 = message
   local id=$1 dir="${HARNESS_SESSIONS}/$1"
   (
-    flock -n 9
+    # Blocking acquire: a message sent mid-turn queues behind the in-flight
+    # run. flock -n would fail silently here and run a second concurrent
+    # driver on the same session (duplicate subagents, racing writes).
+    flock 9
     "${_HS}" agent "${id}" "$2" >>"${dir}/serve.log" 2>&1
   ) 9>"${dir}/.lock" &>/dev/null &
 }

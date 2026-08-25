@@ -15,7 +15,7 @@ set -euo pipefail
 ANTHROPIC_API_KEY     API key (required)
 ANTHROPIC_API_URL     API endpoint (https://api.anthropic.com/v1/messages)
 ANTHROPIC_API_VERSION API version (2023-06-01)
-ANTHROPIC_MAX_TOKENS  max response tokens (8192)
+ANTHROPIC_MAX_TOKENS  max response tokens (64000)
 ENVEOF
 exit 0; }
 
@@ -35,7 +35,7 @@ else
 fi
 ANTHROPIC_API_URL="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
 ANTHROPIC_API_VERSION="${ANTHROPIC_API_VERSION:-2023-06-01}"
-ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-8192}"
+ANTHROPIC_MAX_TOKENS="${ANTHROPIC_MAX_TOKENS:-64000}"
 
 _curl_headers=(
   -H "${_auth_header}"

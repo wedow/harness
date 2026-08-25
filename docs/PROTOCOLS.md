@@ -142,7 +142,7 @@ Freeform text listing supported env vars. Displayed in `hs help` under each prov
 ```
 MY_API_KEY     API key (required)
 MY_API_URL     API endpoint (https://api.example.com/v1)
-MY_MAX_TOKENS  max response tokens (8192)
+MY_MAX_TOKENS  max response tokens (64000)
 ```
 
 ### Example

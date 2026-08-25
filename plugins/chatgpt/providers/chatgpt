@@ -18,6 +18,7 @@ set -euo pipefail
 [[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-5.4"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 CHATGPT_MODEL       model override (gpt-5.4)
+CHATGPT_MAX_TOKENS  max response tokens (131072)
 ENVEOF
 exit 0; }
 
@@ -126,11 +127,15 @@ responses_tools="$(echo "${tools}" | jq -c '[.[] | {
 }]')"
 
 # Build the request
+CHATGPT_MAX_TOKENS="${CHATGPT_MAX_TOKENS:-131072}"
+
 request="$(echo "${input_items}" | jq -c \
   --arg model "${model}" \
   --arg instructions "${system}" \
   --argjson tools "${responses_tools}" \
-  '{model: $model, instructions: $instructions, input: ., store: false, stream: true}
+  --argjson max_output_tokens "${CHATGPT_MAX_TOKENS}" \
+  '{model: $model, instructions: $instructions, input: ., store: false, stream: true,
+    max_output_tokens: $max_output_tokens}
    | if ($tools | length) > 0 then . + {tools: $tools} else . end'
 )"
 

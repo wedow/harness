@@ -11,7 +11,7 @@ Commands are executables in `commands/` directories. They implement CLI subcomma
 | `--describe` | one line on stdout | Short description for `hs help` |
 | *(none)* | varies | Execute the command with remaining args |
 
-When invoked, commands receive remaining CLI arguments. The following `HARNESS_*` env vars are exported before dispatch: `HARNESS_ROOT`, `HARNESS_HOME`, `HARNESS_SESSIONS`, `HARNESS_PROVIDER`, `HARNESS_MODEL`, `HARNESS_MAX_TURNS`, `HARNESS_LOG`, `HARNESS_VERSION`.
+When invoked, commands receive remaining CLI arguments. The following `HARNESS_*` env vars are exported before dispatch: `HARNESS_ROOT`, `HARNESS_HOME`, `HARNESS_SESSIONS`, `HARNESS_PROVIDER`, `HARNESS_MODEL`, `HARNESS_LOG`, `HARNESS_VERSION`.
 
 Commands that need access to harness internals (session management, agent loop, discovery functions) source `bin/harness`:
 

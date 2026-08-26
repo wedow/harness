@@ -148,6 +148,15 @@ if [[ -n "${stream_flag}" ]]; then
           agent) _tmo="${HARNESS_AGENT_TIMEOUT:-18000}" ;;
           *)     _tmo="${HARNESS_TOOL_TIMEOUT:-120}" ;;
         esac
+        # A per-call timeout request (e.g. the bash tool's `timeout` param)
+        # raises the wrapper bound: the wrapper must never kill a call the
+        # tool itself would have allowed to run longer — the tool emits its
+        # result only at completion, so an early wrapper kill surfaces as an
+        # EMPTY error result. +5s lets the tool finish and print on budget.
+        _req="$(echo "${_input}" | jq -r '.timeout // empty')"
+        if [[ "${_req}" =~ ^[1-9][0-9]*$ ]] && (( _req > _tmo )); then
+          _tmo=$(( _req + 5 ))
+        fi
         _r="$(cd "${_workdir}" && echo "${_input}" | timeout "${_tmo}" "${_bin}" --exec 2>&1)" && _e=false || _e=true
         printf '%s' "${_r}" | jq -Rs --argjson e "${_e}" '{result: ., error: $e}' \
           > "${dispatch_dir}/${_cid}.json"

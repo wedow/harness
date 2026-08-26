@@ -84,6 +84,10 @@ fi
 if [[ "${streaming}" == true ]]; then
   request="$(echo "${request}" | jq -c '. + {stream: true}')"
 
+  # Wall-clock cap for a streamed response: max output of 131072 tokens at
+  # ~50 tok/s is 2621s of pure streaming; 5400s (~2x) is a generous allowance
+  # for rate dips and SSE framing. Inactivity is guarded separately by
+  # --speed-time above, so this cap only bounds a healthy-but-long stream.
   # zai/GLM occasionally streams a completely empty message (no content
   # blocks, no stop_reason). Ending a turn on that looks like a silent
   # subagent death — retry once, then fail loudly instead.
@@ -197,7 +201,7 @@ if [[ "${streaming}" == true ]]; then
       "${_curl_headers[@]}" \
       -d @- \
       --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-      --max-time ${HARNESS_CURL_MAX_TIME:-1800}
+      --max-time ${HARNESS_CURL_MAX_TIME:-5400}
     )
 
     if [[ "${got_message_start}" == false ]]; then

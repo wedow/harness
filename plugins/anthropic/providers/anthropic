@@ -84,128 +84,145 @@ fi
 if [[ "${streaming}" == true ]]; then
   request="$(echo "${request}" | jq -c '. + {stream: true}')"
 
-  # State for accumulating the response
-  local_model=""
-  input_tokens=0
-  output_tokens=0
-  stop_reason=""
-  content="[]"
-  # Per-block state
-  block_type=""
-  block_text=""
-  block_id=""
-  block_name=""
-  block_input=""
-  block_thinking=""
-  block_signature=""
-  got_message_start=false
+  # zai/GLM occasionally streams a completely empty message (no content
+  # blocks, no stop_reason). Ending a turn on that looks like a silent
+  # subagent death — retry once, then fail loudly instead.
+  _empty=true
+  for _attempt in 1 2; do
+    # State for accumulating the response
+    local_model=""
+    input_tokens=0
+    output_tokens=0
+    stop_reason=""
+    content="[]"
+    # Per-block state
+    block_type=""
+    block_text=""
+    block_id=""
+    block_name=""
+    block_input=""
+    block_thinking=""
+    block_signature=""
+    got_message_start=false
 
-  _api_error=""
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    # Skip blank lines and event: lines
-    [[ -z "${line}" || "${line}" =~ ^event: ]] && continue
-    # Detect non-SSE error responses (API returns plain JSON on errors)
-    if [[ "${line}" != data:* ]]; then
-      [[ -z "${_api_error}" ]] && _api_error="${line}"
+    _api_error=""
+    while IFS= read -r line || [[ -n "${line}" ]]; do
+      # Skip blank lines and event: lines
+      [[ -z "${line}" || "${line}" =~ ^event: ]] && continue
+      # Detect non-SSE error responses (API returns plain JSON on errors)
+      if [[ "${line}" != data:* ]]; then
+        [[ -z "${_api_error}" ]] && _api_error="${line}"
+        continue
+      fi
+      data="${line#data:}"; data="${data# }"
+      [[ "${data}" == "[DONE]" ]] && continue
+
+      event_type="$(echo "${data}" | jq -r '.type // ""')"
+
+      case "${event_type}" in
+        message_start)
+          got_message_start=true
+          local_model="$(echo "${data}" | jq -r '.message.model // ""')"
+          input_tokens="$(echo "${data}" | jq -r '.message.usage.input_tokens // 0')"
+          ;;
+        content_block_start)
+          block_type="$(echo "${data}" | jq -r '.content_block.type // ""')"
+          block_text="" ; block_thinking="" ; block_signature=""
+          if [[ "${block_type}" == "tool_use" ]]; then
+            block_id="$(echo "${data}" | jq -r '.content_block.id // ""')"
+            block_name="$(echo "${data}" | jq -r '.content_block.name // ""')"
+            block_input=""
+          fi
+          ;;
+        content_block_delta)
+          delta_type="$(echo "${data}" | jq -r '.delta.type // ""')"
+          case "${delta_type}" in
+            text_delta)
+              text="$(echo "${data}" | jq -j '.delta.text // ""'; printf x)"
+              text="${text%x}"
+              block_text+="${text}"
+              [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
+              ;;
+            thinking_delta)
+              text="$(echo "${data}" | jq -j '.delta.thinking // ""'; printf x)"
+              text="${text%x}"
+              block_thinking+="${text}"
+              [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"thinking",text:$t}')" >> "${HARNESS_SESSION}/.stream"
+              ;;
+            signature_delta)
+              block_signature+="$(echo "${data}" | jq -r '.delta.signature // ""')"
+              ;;
+            input_json_delta)
+              block_input+="$(echo "${data}" | jq -r '.delta.partial_json // ""')"
+              ;;
+          esac
+          ;;
+        content_block_stop)
+          case "${block_type}" in
+            text)
+              content="$(echo "${content}" | jq -c --arg t "${block_text}" \
+                '. + [{type: "text", text: $t}]')"
+              ;;
+            thinking)
+              content="$(echo "${content}" | jq -c \
+                --arg t "${block_thinking}" --arg s "${block_signature}" \
+                '. + [{type: "thinking", thinking: $t, signature: $s}]')"
+              ;;
+            tool_use)
+              parsed_input="$(echo "${block_input}" | jq -c '.' 2>/dev/null || echo '{}')"
+              content="$(echo "${content}" | jq -c \
+                --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" \
+                '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
+              if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
+                jq -c -n --arg id "${block_id}" --arg name "${block_name}" \
+                  --argjson input "${parsed_input}" \
+                  '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
+              fi
+              [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
+              ;;
+          esac
+          block_type=""
+          ;;
+        message_delta)
+          stop_reason="$(echo "${data}" | jq -r '.delta.stop_reason // ""')"
+          output_tokens="$(echo "${data}" | jq -r '.usage.output_tokens // 0')"
+          ;;
+        message_stop|ping)
+          ;;
+        error)
+          _api_error="${data}"
+          ;;
+      esac
+    done < <(echo "${request}" | curl -sS -N "${ANTHROPIC_API_URL}" \
+      "${_curl_headers[@]}" \
+      -d @- \
+      --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
+      --max-time 300
+    )
+
+    if [[ "${got_message_start}" == false ]]; then
+      # Surface the actual API error if we captured one
+      if [[ -n "${_api_error}" ]]; then
+        _msg="$(echo "${_api_error}" | jq -r '.error.message // empty' 2>/dev/null)" || true
+        echo "anthropic API error: ${_msg:-${_api_error}}" >&2
+      else
+        echo "anthropic streaming error: no message_start received" >&2
+      fi
+      exit 1
+    fi
+
+
+    if [[ "$(echo "${content}" | jq 'length')" -eq 0 && -z "${stop_reason}" ]]; then
       continue
     fi
-    data="${line#data:}"; data="${data# }"
-    [[ "${data}" == "[DONE]" ]] && continue
+    _empty=false
+    break
+  done
 
-    event_type="$(echo "${data}" | jq -r '.type // ""')"
-
-    case "${event_type}" in
-      message_start)
-        got_message_start=true
-        local_model="$(echo "${data}" | jq -r '.message.model // ""')"
-        input_tokens="$(echo "${data}" | jq -r '.message.usage.input_tokens // 0')"
-        ;;
-      content_block_start)
-        block_type="$(echo "${data}" | jq -r '.content_block.type // ""')"
-        block_text="" ; block_thinking="" ; block_signature=""
-        if [[ "${block_type}" == "tool_use" ]]; then
-          block_id="$(echo "${data}" | jq -r '.content_block.id // ""')"
-          block_name="$(echo "${data}" | jq -r '.content_block.name // ""')"
-          block_input=""
-        fi
-        ;;
-      content_block_delta)
-        delta_type="$(echo "${data}" | jq -r '.delta.type // ""')"
-        case "${delta_type}" in
-          text_delta)
-            text="$(echo "${data}" | jq -j '.delta.text // ""'; printf x)"
-            text="${text%x}"
-            block_text+="${text}"
-            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
-            ;;
-          thinking_delta)
-            text="$(echo "${data}" | jq -j '.delta.thinking // ""'; printf x)"
-            text="${text%x}"
-            block_thinking+="${text}"
-            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${text}" '{type:"thinking",text:$t}')" >> "${HARNESS_SESSION}/.stream"
-            ;;
-          signature_delta)
-            block_signature+="$(echo "${data}" | jq -r '.delta.signature // ""')"
-            ;;
-          input_json_delta)
-            block_input+="$(echo "${data}" | jq -r '.delta.partial_json // ""')"
-            ;;
-        esac
-        ;;
-      content_block_stop)
-        case "${block_type}" in
-          text)
-            content="$(echo "${content}" | jq -c --arg t "${block_text}" \
-              '. + [{type: "text", text: $t}]')"
-            ;;
-          thinking)
-            content="$(echo "${content}" | jq -c \
-              --arg t "${block_thinking}" --arg s "${block_signature}" \
-              '. + [{type: "thinking", thinking: $t, signature: $s}]')"
-            ;;
-          tool_use)
-            parsed_input="$(echo "${block_input}" | jq -c '.' 2>/dev/null || echo '{}')"
-            content="$(echo "${content}" | jq -c \
-              --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" \
-              '. + [{type: "tool_use", id: $id, name: $name, input: $input}]')"
-            if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
-              jq -c -n --arg id "${block_id}" --arg name "${block_name}" \
-                --argjson input "${parsed_input}" \
-                '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
-            fi
-            [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${block_id}" --arg name "${block_name}" --argjson input "${parsed_input}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
-            ;;
-        esac
-        block_type=""
-        ;;
-      message_delta)
-        stop_reason="$(echo "${data}" | jq -r '.delta.stop_reason // ""')"
-        output_tokens="$(echo "${data}" | jq -r '.usage.output_tokens // 0')"
-        ;;
-      message_stop|ping)
-        ;;
-      error)
-        _api_error="${data}"
-        ;;
-    esac
-  done < <(echo "${request}" | curl -sS -N "${ANTHROPIC_API_URL}" \
-    "${_curl_headers[@]}" \
-    -d @- \
-    --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-    --max-time 300
-  )
-
-  if [[ "${got_message_start}" == false ]]; then
-    # Surface the actual API error if we captured one
-    if [[ -n "${_api_error}" ]]; then
-      _msg="$(echo "${_api_error}" | jq -r '.error.message // empty' 2>/dev/null)" || true
-      echo "anthropic API error: ${_msg:-${_api_error}}" >&2
-    else
-      echo "anthropic streaming error: no message_start received" >&2
-    fi
+  if [[ "${_empty}" == true ]]; then
+    echo "anthropic: empty response (no content, no stop_reason) after retry" >&2
     exit 1
   fi
-
   # Output reconstructed response (content array built in order during streaming)
   jq -n -c \
     --arg model "${local_model}" \

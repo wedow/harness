@@ -20,7 +20,7 @@ body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 
 .msg pre{white-space:pre-wrap;overflow-wrap:anywhere;margin:.25rem 0;font:inherit}
 .meta{color:#888;font-size:.8rem}
 form{display:flex;gap:.5rem;margin:0;padding:1rem 0;background:inherit;position:sticky;bottom:0}
-input[type=text]{flex:1;min-width:0;padding:.5rem;border:1px solid #ccc;border-radius:4px}
+input[type=text],textarea{flex:1;min-width:0;padding:.5rem;border:1px solid #ccc;border-radius:4px;font:inherit}
 button{padding:.5rem 1rem}
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
@@ -67,8 +67,14 @@ CSS
   bd.onclick = close;
   sb.addEventListener('click', e => { if (e.target.closest('a')) close(); });
   // draft preservation: survive reloads (incl. live-UI reload nudges) and tab close
-  const inp = document.querySelector('#main form input[name=message]');
+  const inp = document.querySelector('#main form [name=message]');
   if (inp) {
+    // textarea: Enter sends, Shift+Enter inserts a newline
+    if (inp.tagName === 'TEXTAREA') {
+      inp.addEventListener('keydown', e => {
+        if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); inp.form.requestSubmit(); }
+      });
+    }
     const k = 'draft:' + location.pathname;
     const saved = localStorage.getItem(k);
     if (saved && !inp.value) { inp.value = saved; inp.focus(); }
@@ -358,7 +364,7 @@ $(_transcript "$1")
 </div>
 <button id="scrollbtn" hidden title="scroll to bottom">↓</button>
 <form method="post" action="/s/$(html_escape "${id}")">
-  <input type="text" name="message" placeholder="reply…" required autofocus>
+  <textarea name="message" placeholder="reply…" rows="3" required autofocus></textarea>
   <button>send</button>
 </form>
 <script>

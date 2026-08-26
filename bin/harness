@@ -120,13 +120,14 @@ agent_loop() {
   local session_dir="$1"
   export SESSION_DIR="${session_dir}"
   trap 'printf "%s\n" "{\"type\":\"done\"}" >> "${SESSION_DIR}/.stream" 2>/dev/null' EXIT
-  local state="start" context='{}' result="" rc=0 iterations=0
+  local state="start" context='{}' result="" rc=0 iterations=0 errored=0
 
   while [[ -n "${state}" ]]; do
     _refresh_sources
     result="$(echo "${context}" | call "${state}")" && rc=0 || rc=$?
 
     if (( rc != 0 )); then
+      errored=1
       [[ "${state}" == "error" ]] && break
       state="error"; context="${result}"; continue
     fi
@@ -139,6 +140,9 @@ agent_loop() {
 
   local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
   [[ -n "${output}" ]] && printf '%s\n' "${output}"
+  # Non-zero when the loop ended in the error state — commands (agent/stream)
+  # propagate it so callers (agent tool panes) see failure, not a silent 0.
+  return "${errored}"
 }
 
 # --------------------------------------------------------------------------- #

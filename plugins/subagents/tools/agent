@@ -29,6 +29,8 @@ _run_child_or_fail() {
   rm -f "${err_file}"
   if [[ "${_child_exit}" -ne 0 || -z "${_child_out}" ]]; then
     last_err="$(printf '%s\n' "${_child_err}" | tail -1)"
+    # harness agent prints its error to stdout — use it when stderr is empty
+    [[ -n "${last_err}" ]] || last_err="$(printf '%s\n' "${_child_out}" | tail -1)"
     if [[ "${_child_exit}" -eq 124 ]]; then
       printf 'subagent timed out after %ss: %s\n' "${HARNESS_AGENT_TIMEOUT:-18000}" "${last_err}"
     else
@@ -229,11 +231,14 @@ HEADER
         exit 1
       fi
 
-      # If the pane wrote a non-zero exit code, surface it (BUG-1 for tmux).
+      # If the pane wrote a non-zero exit code, surface it (BUG-1 for tmux)
+      # together with the last error message from the stream — the cause
+      # (e.g. a provider timeout) is what the caller needs to act on.
       if [[ -f "${session_dir}/.exit_code" ]]; then
         child_exit="$(cat "${session_dir}/.exit_code")"
         if [[ "${child_exit}" != "0" ]]; then
-          echo "subagent failed (exit ${child_exit:-unknown})"
+          _err_msg="$(grep '"type":"error"' "${session_dir}/.stream" 2>/dev/null | tail -1 | jq -r '.message' 2>/dev/null || true)"
+          echo "subagent failed (exit ${child_exit:-unknown}): ${_err_msg:-no error detail in stream}"
           exit 1
         fi
       fi

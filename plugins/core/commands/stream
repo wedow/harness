@@ -57,6 +57,12 @@ agent_pid=$!
 set +m
 
 _render_stream "${session_dir}/.stream" "${agent_pid}"
-wait "${agent_pid}" 2>/dev/null || true
+_loop_rc=0
+wait "${agent_pid}" 2>/dev/null || _loop_rc=$?
 
 echo ""  # trailing newline before pane closes
+
+# Propagate agent_loop failure so the pane's .exit_code marks it — a silent 0
+# makes the agent tool extract the last (mid-turn) assistant message and pass
+# it off as the subagent's final output.
+exit "${_loop_rc}"

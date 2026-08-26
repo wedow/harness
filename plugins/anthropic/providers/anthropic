@@ -197,7 +197,7 @@ if [[ "${streaming}" == true ]]; then
       "${_curl_headers[@]}" \
       -d @- \
       --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-      --max-time 300
+      --max-time ${HARNESS_CURL_MAX_TIME:-1800}
     )
 
     if [[ "${got_message_start}" == false ]]; then

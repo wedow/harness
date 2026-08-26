@@ -135,7 +135,17 @@ agent_loop() {
     state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
     context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
 
-    (( ++iterations > HARNESS_MAX_TURNS * 3 )) && { _log "safety: exceeded max iterations"; break; }
+    # Model-turn budget: one send == one model response. A real tool turn
+    # costs ~5 state transitions, so counting states cuts HARNESS_MAX_TURNS
+    # to a fifth — long implementer subagents died mid-work at ~60 turns.
+    # x2 slack absorbs re-sends; hitting the cap is a loud failure, never a
+    # silent truncated transcript.
+    if [[ "${state}" == "send" ]] && (( ++iterations > HARNESS_MAX_TURNS * 2 )); then
+      _log "safety: exceeded max model turns (${HARNESS_MAX_TURNS})"
+      printf '%s\n' "$(jq -c -n --arg m "exceeded max model turns (${HARNESS_MAX_TURNS})" '{type:"error",message:$m}')" >> "${SESSION_DIR}/.stream" 2>/dev/null || true
+      errored=1
+      break
+    fi
   done
 
   local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true

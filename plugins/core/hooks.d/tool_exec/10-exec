@@ -58,6 +58,8 @@ _display+=$'\n'
 
 if [[ "${tool_name}" == "bash" ]]; then
   _display+="$(echo "${input}" | jq -r '.command // empty' | sed 's/^/  /')"
+  # Non-command params (timeout etc.) so long-running calls are explainable
+  _display+="$(echo "${input}" | jq -r 'del(.command) | to_entries[] | select((.value // "") != "") | "  \(.key)=\(.value)"')"
 else
   _display+="$(echo "${input}" | jq -r 'to_entries[] | "  \(.key)=\(.value)"')"
 fi

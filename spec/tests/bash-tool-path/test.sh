@@ -27,12 +27,12 @@ bash_tool="${HARNESS_ROOT}/plugins/core/tools/bash"
 
 # Tool callable by name; later source wins on collision.
 result="$(echo '{"command":"my_tool"}' | "${bash_tool}" --exec)"
-assert_eq "later source wins" "${result}" "a from src2"
+assert_json '.stdout' "${result}" "a from src2"
 
 # Tool present in only one source still resolves.
 result="$(echo '{"command":"solo_tool"}' | "${bash_tool}" --exec)"
-assert_eq "single-source tool" "${result}" "solo"
+assert_json '.stdout' "${result}" "solo"
 
 # 'bash' is NOT shadowed — a nested bash call uses the real shell.
 result="$(echo '{"command":"bash -c \"echo real\""}' | "${bash_tool}" --exec)"
-assert_eq "bash not shadowed" "${result}" "real"
+assert_json '.stdout' "${result}" "real"

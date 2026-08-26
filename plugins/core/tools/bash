@@ -7,7 +7,7 @@ case "${1:-}" in
     cat <<'JSON'
 {
   "name": "bash",
-  "description": "Execute a bash command in the working directory. Returns combined stdout and stderr. Use for running scripts, installing packages, file operations, or any shell command.",
+  "description": "Execute a bash command in the working directory. Returns JSON {exit, elapsed_s, timeout_s, timed_out, stdout, stderr} — check elapsed_s to notice surprisingly slow commands. Use for running scripts, installing packages, file operations, or any shell command.",
   "input_schema": {
     "type": "object",
     "properties": {
@@ -56,34 +56,42 @@ JSON
       done
       export PATH="${tool_bin}:${PATH}"
     fi
-    # Execute with a timeout, capturing both stdout and stderr. The command
-    # runs in its own process group (setsid) and the WHOLE group is killed on
-    # expiry: signaling only the direct bash child leaves grandchildren
-    # (e.g. a hung test binary under `make`) alive holding the output pipe
-    # open, hanging the tool call far past its own timeout.
+    # Execute with a timeout, capturing stdout and stderr separately. The
+    # command runs in its own process group (setsid) and the WHOLE group is
+    # killed on expiry: signaling only the direct bash child leaves
+    # grandchildren (e.g. a hung test binary under `make`) alive holding
+    # output pipes open, hanging the tool call far past its own timeout.
+    # Result is JSON (exit, elapsed_s, timeout_s, timed_out, stdout, stderr)
+    # so the model sees exactly how long its command took.
     _timeout="${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}"
+    _out="$(mktemp)"; _err="$(mktemp)"; _killed="$(mktemp -u)"
+    _t0="$(date +%s.%N)"
+    _rc=0
     if command -v setsid &>/dev/null; then
-      setsid --wait "${_bash}" -c "${command}" 2>&1 & _pid=$!
-      _killed="$(mktemp -u)"
+      setsid --wait "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" & _pid=$!
       # Watchdog output silenced: an orphaned inner sleep must never
       # inherit (and hold open) this tool's stdout pipe.
       ( sleep "${_timeout}"; touch "${_killed}";
         kill -TERM -- "-${_pid}" 2>/dev/null; sleep 5;
         kill -KILL -- "-${_pid}" 2>/dev/null ) >/dev/null 2>&1 & _wd=$!
-      wait "${_pid}" 2>/dev/null || true
+      wait "${_pid}" 2>/dev/null || _rc=$?
       kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
-      if [[ -e "${_killed}" ]]; then
-        printf '\nbash: timed out after %ss (process group killed)\n' "${_timeout}"
-      fi
     elif command -v timeout &>/dev/null; then
-      timeout "${_timeout}" "${_bash}" -c "${command}" 2>&1 || true
+      timeout "${_timeout}" "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" || _rc=$?
     else
-      # macOS: background + watchdog kill (no GNU timeout)
-      "${_bash}" -c "${command}" 2>&1 & _pid=$!
+      # macOS fallback: background + watchdog kill (no GNU timeout, no setsid)
+      "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" & _pid=$!
       ( sleep "${_timeout}" && kill "${_pid}" 2>/dev/null ) & _wd=$!
-      wait "${_pid}" 2>/dev/null || true
+      wait "${_pid}" 2>/dev/null || _rc=$?
       kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
     fi
+    _elapsed="$(awk -v a="${_t0}" -v b="$(date +%s.%N)" 'BEGIN{printf "%.2f", b-a}')"
+    if [[ -e "${_killed}" ]]; then _timed=true; else _timed=false; fi
+    jq -n --argjson rc "${_rc}" --argjson elapsed "${_elapsed}" \
+      --argjson tmo "${_timeout}" --argjson timed "${_timed}" \
+      --rawfile out "${_out}" --rawfile err "${_err}" \
+      '{exit: $rc, elapsed_s: $elapsed, timeout_s: $tmo, timed_out: $timed, stdout: $out, stderr: $err}'
+    rm -f "${_out}" "${_err}" "${_killed}"
     ;;
   *)
     echo "usage: bash --schema | --describe | --exec" >&2

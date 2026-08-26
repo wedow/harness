@@ -32,8 +32,15 @@ _render_stream() {
         printf '\n\033[90m[tool: %s]\033[0m' "${_name}"
         # Show arguments so user knows what's happening
         if [[ "${_name}" == "bash" ]]; then
+          local _to
           _cmd="$(echo "${_input}" | jq -r '.command // empty')"
-          [[ -n "${_cmd}" ]] && printf ' \033[2m%s\033[0m' "${_cmd}"
+          _to="$(echo "${_input}" | jq -r '.timeout // empty')"
+          # Params the caller set (esp. timeout) belong in the header: a
+          # long-running pane must be explainable at a glance.
+          if [[ -n "${_to}" ]]; then
+            printf ' \033[90m(\033[0m\033[33mtimeout %ss\033[0m\033[90m)\033[0m' "${_to}"
+          fi
+          [[ -n "${_cmd}" ]] && printf '\n\033[2m  $ %s\033[0m' "${_cmd}"
         elif [[ -n "${_input}" && "${_input}" != "{}" && "${_input}" != "null" ]]; then
           local _args
           _args="$(echo "${_input}" | jq -r 'to_entries | map("\(.key)=\(.value | tostring)") | join(", ")')"

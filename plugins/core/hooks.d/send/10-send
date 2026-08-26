@@ -142,19 +142,21 @@ if [[ -n "${stream_flag}" ]]; then
       fi
       (
         case "${_name}" in
-          # agent runs whole subagents (minutes, silent until done) —
-          # the generic tool timeout kills it into an empty error result.
-          # It self-bounds by HARNESS_AGENT_TIMEOUT internally.
-          agent) _tmo="${HARNESS_AGENT_TIMEOUT:-18000}" ;;
+          # agent runs whole subagents (minutes, silent until done) and
+          # self-bounds by HARNESS_AGENT_TIMEOUT, printing a clear timeout
+          # message. The wrapper must stay strictly BEHIND that internal
+          # bound (+30s slack): a wrapper kill races the tool's own timeout
+          # and, when it lands first, the caller gets an empty error result
+          # instead of the message.
+          agent) _tmo=$(( ${HARNESS_AGENT_TIMEOUT:-18000} + 30 )) ;;
           *)     _tmo="${HARNESS_TOOL_TIMEOUT:-120}" ;;
         esac
         # A per-call timeout request (e.g. the bash tool's `timeout` param)
         # raises the wrapper bound: the wrapper must never kill a call the
-        # tool itself would have allowed to run longer — the tool emits its
-        # result only at completion, so an early wrapper kill surfaces as an
-        # EMPTY error result. +5s lets the tool finish and print on budget.
+        # tool itself would have allowed to run longer. +5s lets the tool
+        # finish and print on budget.
         _req="$(echo "${_input}" | jq -r '.timeout // empty')"
-        if [[ "${_req}" =~ ^[1-9][0-9]*$ ]] && (( _req > _tmo )); then
+        if [[ "${_req}" =~ ^[1-9][0-9]*$ ]] && (( _req + 5 > _tmo )); then
           _tmo=$(( _req + 5 ))
         fi
         _r="$(cd "${_workdir}" && echo "${_input}" | timeout "${_tmo}" "${_bin}" --exec 2>&1)" && _e=false || _e=true

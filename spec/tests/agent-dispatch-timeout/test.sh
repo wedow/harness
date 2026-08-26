@@ -58,3 +58,26 @@ assert_json '.error' "$(cat "${result_file}")" "false"
 # And a generic tool is still bounded by HARNESS_TOOL_TIMEOUT (regression guard
 # for dispatch-tool-timeout semantics on non-agent tools).
 echo "PASS (elapsed=${elapsed}s)"
+# Phase 2: wrapper slack — the agent wrapper must sit strictly ABOVE the
+# agent tool's internal budget (HARNESS_AGENT_TIMEOUT) so the tool's own
+# "timed out after Ns" message wins the race; a wrapper kill at exactly N
+# would surface as an EMPTY error result.
+export HARNESS_AGENT_TIMEOUT=2
+cat > "${mock_src}/tools/agent" <<'TOOL'
+#!/usr/bin/env bash
+# Stub with NO internal bound: sleeps past the env budget, then reports.
+[[ "${1:-}" == "--exec" ]] && { sleep 4; echo "late-but-alive"; exit 0; }
+echo '{}'
+TOOL
+chmod +x "${mock_src}/tools/agent"
+
+rc=0
+out="$(echo '{"messages":[]}' | timeout 15 "${send_hook}" 2>&1)" || rc=$?
+pkill -f "${mock_src}/tools/agent" 2>/dev/null || true
+[[ "${rc}" -eq 0 ]] || { echo "FAIL: send hook failed (rc=${rc}): ${out}"; exit 1; }
+
+result_file="${HARNESS_SESSION}/.tool_dispatch/c1.json"
+assert_json '.result' "$(cat "${result_file}")" "late-but-alive"
+assert_json '.error' "$(cat "${result_file}")" "false"
+
+echo "PASS (phase 2)"

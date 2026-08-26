@@ -17,7 +17,7 @@ case "${1:-}" in
       },
       "timeout": {
         "type": "integer",
-        "description": "Timeout in seconds (default: 120)"
+        "description": "Timeout in seconds (default 120). On expiry the whole command process group is killed"
       }
     },
     "required": ["command"]
@@ -56,9 +56,26 @@ JSON
       done
       export PATH="${tool_bin}:${PATH}"
     fi
-    # Execute with a timeout, capture both stdout and stderr
+    # Execute with a timeout, capturing both stdout and stderr. The command
+    # runs in its own process group (setsid) and the WHOLE group is killed on
+    # expiry: signaling only the direct bash child leaves grandchildren
+    # (e.g. a hung test binary under `make`) alive holding the output pipe
+    # open, hanging the tool call far past its own timeout.
     _timeout="${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}"
-    if command -v timeout &>/dev/null; then
+    if command -v setsid &>/dev/null; then
+      setsid --wait "${_bash}" -c "${command}" 2>&1 & _pid=$!
+      _killed="$(mktemp -u)"
+      # Watchdog output silenced: an orphaned inner sleep must never
+      # inherit (and hold open) this tool's stdout pipe.
+      ( sleep "${_timeout}"; touch "${_killed}";
+        kill -TERM -- "-${_pid}" 2>/dev/null; sleep 5;
+        kill -KILL -- "-${_pid}" 2>/dev/null ) >/dev/null 2>&1 & _wd=$!
+      wait "${_pid}" 2>/dev/null || true
+      kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
+      if [[ -e "${_killed}" ]]; then
+        printf '\nbash: timed out after %ss (process group killed)\n' "${_timeout}"
+      fi
+    elif command -v timeout &>/dev/null; then
       timeout "${_timeout}" "${_bash}" -c "${command}" 2>&1 || true
     else
       # macOS: background + watchdog kill (no GNU timeout)

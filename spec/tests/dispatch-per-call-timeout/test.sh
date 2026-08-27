@@ -50,3 +50,26 @@ assert_json '.result' "$(cat "${result_file}")" "slow-done"
 assert_json '.error' "$(cat "${result_file}")" "false"
 
 echo "PASS"
+# Phase 2: no per-call param — the wrapper must sit ABOVE the tool's
+# internal budget (HARNESS_TOOL_TIMEOUT) for every tool, not just when a
+# per-call timeout is passed. A wrapper kill at exactly the internal budget
+# races the tool's own watchdog and, landing first, yields an EMPTY error
+# result (the bench-at-120s silent failure).
+export HARNESS_TOOL_TIMEOUT=2
+cat > "${mock_src}/tools/slow_tool" <<'TOOL'
+#!/usr/bin/env bash
+# No internal bound: sleeps past the env budget, then reports.
+[[ "${1:-}" == "--exec" ]] && { sleep 4; echo "env-budget-slack-ok"; exit 0; }
+echo '{}'
+TOOL
+chmod +x "${mock_src}/tools/slow_tool"
+
+rc=0
+out="$(echo '{"messages":[]}' | timeout 15 "${send_hook}" 2>&1)" || rc=$?
+pkill -f "${mock_src}/tools/slow_tool" 2>/dev/null || true
+[[ "${rc}" -eq 0 ]] || { echo "FAIL: send hook failed (rc=${rc}): ${out}"; exit 1; }
+
+assert_json '.result' "$(cat "${result_file}")" "env-budget-slack-ok"
+assert_json '.error' "$(cat "${result_file}")" "false"
+
+echo "PASS (phase 2)"

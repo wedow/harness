@@ -3,6 +3,18 @@
 # Sourced environment: HARNESS_ROOT, HARNESS_SESSIONS (set by serve).
 set -uo pipefail
 
+# Timestamp every stderr line (including bash's own diagnostics like
+# "printf: write error: Broken pipe") so connection-log noise is
+# correlatable with events in other logs.
+# fd 9 = the real stderr: the timestamper must keep writing there even
+# when the socket (stdout) is broken — that is exactly when the noise happens.
+exec 9>&2
+exec 2> >(
+  while IFS= read -r line; do
+    printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "${line}" >&9
+  done
+)
+
 source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
 source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
 source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"

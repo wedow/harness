@@ -121,7 +121,7 @@ _agent_queue_count() { # $1 = session dir
   local p cmd c=0
   for p in $(fuser "${1}/.lock" 2>/dev/null); do
     [[ -r "/proc/${p}/cmdline" ]] || continue
-    cmd="$(tr '\0' ' ' < "/proc/${p}/cmdline")"
+    cmd="$(tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null)" || continue
     if [[ "${cmd}" == "flock 9 " ]]; then c=$(( c + 1 )); fi
   done
   echo "${c}"

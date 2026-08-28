@@ -185,27 +185,28 @@ _print_session_stats() {
   local msg_dir="${session_dir}/messages"
   [[ -d "${msg_dir}" ]] || return 0
 
-  local tokens_in=0 tokens_out=0 tokens_total=0 cache_read=0 cache_write=0
-  local file in_count out_count total_count read_count write_count
-  while IFS= read -r file; do
-    in_count="$(_frontmatter_value tokens_in "${file}")"
-    out_count="$(_frontmatter_value tokens_out "${file}")"
-    total_count="$(_frontmatter_value tokens_total "${file}")"
-    read_count="$(_frontmatter_value tokens_cache_read "${file}")"
-    write_count="$(_frontmatter_value tokens_cache_write "${file}")"
-
-    in_count="${in_count:-0}"
-    out_count="${out_count:-0}"
-    total_count="${total_count:-$(( in_count + out_count ))}"
-    read_count="${read_count:-0}"
-    write_count="${write_count:-0}"
-
-    tokens_in=$(( tokens_in + in_count ))
-    tokens_out=$(( tokens_out + out_count ))
-    tokens_total=$(( tokens_total + total_count ))
-    cache_read=$(( cache_read + read_count ))
-    cache_write=$(( cache_write + write_count ))
-  done < <(find "${msg_dir}" -maxdepth 1 -type f -name '*-assistant.md' | sort)
+  # One awk over every assistant message (frontmatter lives between the
+  # first two --- lines). A per-file jq/awk subprocess per field made this
+  # visibly slow on long sessions.
+  local tokens_in=0 tokens_out=0 tokens_total=0 cache_read=0 cache_write=0 sums=""
+  sums="$(awk '
+    function flush() {
+      ti += fin + 0; to += fout + 0
+      tt += (ftot != "" && ftot + 0 != 0 ? ftot : fin + fout + 0)
+      cr += fcr + 0; cw += fcw + 0
+    }
+    FNR == 1 { flush(); hdr = 0; fin = fout = ftot = fcr = fcw = "" }
+    /^---/ { hdr++; next }
+    hdr == 1 {
+      if ($1 == "tokens_in:") fin = $2
+      else if ($1 == "tokens_out:") fout = $2
+      else if ($1 == "tokens_total:") ftot = $2
+      else if ($1 == "tokens_cache_read:") fcr = $2
+      else if ($1 == "tokens_cache_write:") fcw = $2
+    }
+    END { flush(); printf "%d %d %d %d %d\n", ti, to, tt, cr, cw }
+  ' "${msg_dir}"/*-assistant.md 2>/dev/null || true)"  # no glob match must not fail callers
+  read -r tokens_in tokens_out tokens_total cache_read cache_write <<<"${sums:-0 0 0 0 0}"
 
   (( tokens_total == 0 && tokens_in == 0 && tokens_out == 0 )) && return 0
   echo "Token usage: total=${tokens_total} input=${tokens_in} (+ ${cache_read} cached, + ${cache_write} written) output=${tokens_out}" >&2

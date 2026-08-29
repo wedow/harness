@@ -90,7 +90,35 @@ EOF
 
 # Return control JSON
 if [[ "${stop}" == "tool_calls" ]]; then
+  rm -f "${HARNESS_SESSION}/.length_cont" 2>/dev/null || true  # fresh turn
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
-else
+elif [[ "${stop}" == "length" ]]; then
+  # Output-token cap hit mid-turn: the model is NOT done, just out of room —
+  # ending the turn here hands back a truncated message masquerading as the
+  # final answer. Continue instead: save a synthetic nudge and route back to
+  # assemble. Capped so a pathological model cannot loop forever.
+  _cap="${HARNESS_LENGTH_CONTINUATIONS:-2}"
+  _n="$(cat "${HARNESS_SESSION}/.length_cont" 2>/dev/null || echo 0)"
+  _n=$(( _n + 1 ))
+  if (( _n > _cap )); then
+    jq -n --arg m "output token limit hit ${_n} times (continuation cap ${_cap}); turn aborted" '{error: $m}'
+    exit 1
+  fi
+  echo "${_n}" > "${HARNESS_SESSION}/.length_cont"
+  _nseq="$(printf '%04d' $(( 10#${seq} + 1 )))"
+  cat > "${msg_dir}/${_nseq}-user.md" <<NUDGE
+---
+role: user
+seq: ${_nseq}
+timestamp: $(date -Iseconds)
+continuation: length
+---
+[output token limit reached — response was cut off and saved]
+
+Continue exactly where you left off. Do not repeat already-emitted content. If a tool call was cut off mid-way, re-issue it from its beginning.
+NUDGE
+  echo '{"next_state": "assemble"}'
+elif [[ "${stop}" == "end" ]]; then
+  rm -f "${HARNESS_SESSION}/.length_cont" 2>/dev/null || true  # turn complete
   printf '%s' "${text_output}" | jq -Rs '{next_state: "done", output: .}'
 fi

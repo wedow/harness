@@ -209,6 +209,13 @@ HEADER
       # split, then retile into an even grid so panes don't squish to death.
       pane_id="$(tmux split-window -P -F '#{pane_id}' "${pane_cmd}" 2>/dev/null)" \
         || pane_id="$(tmux new-window -P -F '#{pane_id}' "${pane_cmd}")"
+      # The pane must die with this tool on EVERY exit path. An externally
+      # killed tool process (dispatcher wrapper expiry, manual kill) otherwise
+      # leaks a fully live subagent that keeps working and committing in the
+      # worktree long after the caller recorded a timeout (lingering writers).
+      _kill_pane() { tmux kill-pane -t "${pane_id}" 2>/dev/null || true; }
+      trap '_kill_pane' EXIT
+      trap '_kill_pane; exit 143' TERM INT HUP
       tmux select-layout -t "${pane_id}" tiled >/dev/null 2>&1 || true
       # Bound the pane-poll loop by the wall-clock timeout; kill the pane on
       # expiry so a hung subagent doesn't block the parent until manually killed.

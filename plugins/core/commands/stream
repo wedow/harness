@@ -55,6 +55,21 @@ set -m
 agent_loop "${session_dir}" >/dev/null &
 agent_pid=$!
 set +m
+# set -m puts the loop in its own process group, which ALSO means it
+# survives the SIGHUP that pane closure delivers to the foreground group.
+# Kill the whole group when stream exits — any path — or a closed pane
+# leaves a headless agent still working and committing (lingering writers).
+# NB: untrapped SIGHUP kills bash without running the EXIT trap, so the
+# fatal signals must be trapped explicitly.
+_loop_cleanup() {
+  kill -TERM -- -"${agent_pid}" 2>/dev/null || true
+  sleep 0.2
+  kill -KILL -- -"${agent_pid}" 2>/dev/null || true
+}
+trap '_loop_cleanup' EXIT
+trap '_loop_cleanup; exit 129' HUP
+trap '_loop_cleanup; exit 130' INT
+trap '_loop_cleanup; exit 143' TERM
 
 _render_stream "${session_dir}/.stream" "${agent_pid}"
 _loop_rc=0

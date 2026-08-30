@@ -13,7 +13,7 @@ case "${1:-}" in
 
   --schema)
     [[ -f "${conf}" ]] || exit 1
-    grep -q '^title_locked=' "${conf}" && exit 1 # user set the title: stay hidden
+    grep -q '^title_locked=.' "${conf}" && exit 1 # locked (non-empty): stay hidden
     cat <<'JSON'
 {
   "name": "title",

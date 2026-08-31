@@ -274,11 +274,12 @@ fi
 # Call the API. No --speed-time here: a non-streaming response sends zero
 # bytes while the server computes the full body, so an inactivity timer would
 # falsely abort long-but-healthy requests (extended thinking, slow endpoints).
-# --max-time 300 remains the backstop.
+# The wall-clock cap covers full generation of a max-length response
+# (131072 tokens at ~50 tok/s ≈ 44 min) — same knob as the streaming path.
 response="$(echo "${request}" | curl -sS "${ANTHROPIC_API_URL}" \
   "${_curl_headers[@]}" \
   -d @- \
-  --max-time 300
+  --max-time ${HARNESS_CURL_MAX_TIME:-5400}
 )"
 
 # Check for API errors

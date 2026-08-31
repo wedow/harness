@@ -172,14 +172,6 @@ _handle_sigint() {
   fi
   _kill_group
 }
-_frontmatter_value() {
-  local key="$1" file="$2"
-  awk -F': ' -v key="${key}" '
-    NR == 1 && $0 == "---" { in_frontmatter = 1; next }
-    in_frontmatter && $0 == "---" { exit }
-    in_frontmatter && $1 == key { print $2; exit }
-  ' "${file}"
-}
 
 _print_session_stats() {
   local msg_dir="${session_dir}/messages"

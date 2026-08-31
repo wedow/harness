@@ -138,4 +138,16 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
 done
 
 flush_tool_results
+
+# The Anthropic API requires alternating roles. A user message inserted
+# mid-turn (live steering from the web UI) can land right after tool results,
+# producing two consecutive user turns — merge consecutive user messages
+# into one (string content becomes a text block; arrays concatenate).
+messages="$(echo "${messages}" | jq -c 'reduce .[] as $m ([];
+  if ($m.role == "user") and (length > 0) and (.[-1].role == "user")
+  then .[-1] = (.[-1] + {content: (
+      ([.[-1].content | if type == "string" then [{type: "text", text: .}] else . end]
+       + [$m.content   | if type == "string" then [{type: "text", text: .}] else . end]) | add)})
+  else . + [$m] end)')"
+
 printf '%s\n%s' "${payload}" "${messages}" | jq -c -s '.[0] + {messages: .[1]}'

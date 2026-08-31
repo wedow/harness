@@ -238,6 +238,14 @@ Provider-specific assemble hooks (e.g., `plugins/anthropic/hooks.d/assemble/10-m
 | `HARNESS_SESSIONS` | nearest `.harness/sessions/` up from CWD, else `$HARNESS_HOME/sessions` | Session storage (auto-discovered) |
 | `HARNESS_MODEL` | auto from provider `--defaults` | Model identifier |
 | `HARNESS_PROVIDER` | auto: first provider with credentials | Provider plugin name |
+| `HARNESS_TOOL_TIMEOUT` | `120` | Wall-clock cap for one tool call (bash tool default; per-call `timeout` param overrides) |
+| `HARNESS_AGENT_TIMEOUT` | `18000` | Wall-clock budget for one subagent (agent tool; per-call `timeout` param overrides) |
+| `HARNESS_AGENT_CONCURRENCY` | `4` | Concurrent subagent provider calls sharing one root session |
+| `HARNESS_LENGTH_CONTINUATIONS` | `2` | Continuations granted when a response hits the model's output-token cap before failing |
+| `HARNESS_CURL_MAX_TIME` | `5400` | Provider HTTP wall-clock cap (streaming and non-streaming) |
+| `HARNESS_CURL_SPEED_TIME` | `60` | Provider streaming inactivity abort (seconds without bytes) |
+| `HARNESS_THINKING` | provider default | Thinking-effort knob passed to adaptive-thinking models |
+| `HARNESS_SERVE_PORT` | `8080` | Web UI port (`harness serve`) |
 
 Provider-specific env vars (API keys, endpoints, etc.) are listed by `hs help` and documented via each provider's `--env` flag.
 

@@ -114,17 +114,35 @@ _agent_running() { # $1 = session dir
   fuser "${1}/.lock" >/dev/null 2>&1
 }
 
-# Queued-message count: a queued message waits in a `flock 9` child that
-# holds .lock open (fd 9 is also inherited by the running driver's whole
-# process tree, so raw fd-holder counting cannot distinguish waiters).
-_agent_queue_count() { # $1 = session dir
-  local p cmd c=0
-  for p in $(fuser "${1}/.lock" 2>/dev/null); do
-    [[ -r "/proc/${p}/cmdline" ]] || continue
-    cmd="$(tr '\0' ' ' < "/proc/${p}/cmdline" 2>/dev/null)" || continue
-    if [[ "${cmd}" == "flock 9 " ]]; then c=$(( c + 1 )); fi
+# Insert a user message into a RUNNING session: the message lands in the
+# transcript immediately and the in-flight loop picks it up at its next
+# assemble — i.e. before the next LLM API call — instead of waiting out the
+# whole turn (which can run for hours with subagents).
+_insert_live_message() { # $1 = session dir, $2 = message; rc 1 = insert failed
+  local dir="$1" msg="$2" last seq file tries=0
+  mkdir -p "${dir}/messages"
+  # Seq computed like _next_seq, but written with noclobber: the running
+  # driver computes its own seq by listing, so a same-instant write collides.
+  # On collision, recompute and bump (ours retries; the driver never does).
+  while (( tries++ < 5 )); do
+    last="$(ls -1 "${dir}/messages" 2>/dev/null | sort -n | tail -1)"
+    if [[ -z "${last}" ]]; then seq="0001"; else seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"; fi
+    file="${dir}/messages/${seq}-user.md"
+    if ( set -o noclobber
+         cat > "${file}" <<EOF
+---
+role: user
+seq: ${seq}
+timestamp: $(date -Iseconds)
+---
+${msg}
+EOF
+       ) 2>/dev/null; then
+      return 0
+    fi
+    sleep 0.05
   done
-  echo "${c}"
+  return 1
 }
 
 # Live subagent count: child sessions with no exit marker AND a live process
@@ -142,13 +160,11 @@ _subagent_count() { # $1 = session dir
 # Status line while a turn is in flight, e.g. "agent working… · 2 subagents ·
 # 1 queued". Prints nothing and returns 1 when idle.
 _agent_status_line() { # $1 = session id
-  local dir="${HARNESS_SESSIONS}/$1" sub n out
+  local dir="${HARNESS_SESSIONS}/$1" sub out
   _agent_running "${dir}" || return 1
   sub="$(_subagent_count "${dir}")"
-  n="$(_agent_queue_count "${dir}")"
   out="&#10227; agent working…"
   if (( sub > 0 )); then out+=" · ${sub} subagent"; (( sub > 1 )) && out+="s"; fi
-  (( n > 0 )) && out+=" · ${n} queued"
   printf '%s' "${out}"
 }
 _sb_spin() { # $1 = session id — sidebar spinner span (morph target for live updates)
@@ -312,12 +328,23 @@ handle_send() { # $1 = session id, message from form body
   [[ -d "${dir}" ]] || { handle_404; return; }
   local msg; msg="$(_form_field message)"
   [[ -n "${msg}" ]] || { handle_400 "empty message"; return; }
-  _launch_agent "$1" "${msg}"
+  if _agent_running "${dir}"; then
+    # Mid-turn: insert into the live conversation (picked up before the next
+    # API call). Falling back to a queued second driver would delay guidance
+    # by the remainder of a possibly hours-long turn.
+    if ! _insert_live_message "${dir}" "${msg}"; then
+      handle_500 "could not insert message (seq collision); try again"
+      return
+    fi
+  else
+    _launch_agent "$1" "${msg}"
+  fi
   STATUS=303
   HEADERS+=("Location: /s/$1")
 }
 
 handle_404() { STATUS=404; HEADERS+=("Content-Type: text/plain"); BODY="not found"; }
+handle_500() { STATUS=500; HEADERS+=("Content-Type: text/plain"); BODY="${1:-internal error}"; }
 handle_400() { STATUS=400; HEADERS+=("Content-Type: text/plain"); BODY="${1:-bad request}"; }
 
 # ---------------------------------------------------------------- helpers --

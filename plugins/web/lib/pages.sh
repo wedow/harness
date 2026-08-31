@@ -24,6 +24,7 @@ input[type=text],textarea{flex:1;min-width:0;padding:.5rem;border:1px solid #ccc
 button{padding:.5rem 1rem}
 #stop-btn{padding:0 0 .25rem}
 #stop-btn button{background:#c22;color:#fff;border:none}
+#stop-btn[hidden]{display:none} /* form{display:flex} would override [hidden] */
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
 #sidebar{position:fixed;top:0;bottom:0;left:0;width:230px;background:#f6f6f6;border-right:1px solid #ddd;padding:1rem;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:20}
@@ -315,6 +316,10 @@ handle_events() { # $1 = id
     sig="$(_dir_sig "${dir}")"
     if [[ "${sig}" != "${last}" ]]; then
       sse_patch "$(_transcript "$1")" || exit 0
+      # Turn end changes the transcript — re-assert status in the same
+      # moment instead of relying on the next change-detect beat.
+      st_last="$(_status_fragment "$1")"
+      sse_patch "${st_last}" || exit 0
       last="${sig}"
     fi
     if (( beat % 4 == 0 )); then # every ~2s: spinners + sidebar titles
@@ -331,6 +336,10 @@ handle_events() { # $1 = id
       fi
     fi
     if (( ++beat % 30 == 0 )); then # every ~15s (30 x 0.5s)
+      # Heartbeat re-asserts the status fragment: a stalled beat or morph
+      # hiccup self-corrects instead of requiring a page refresh.
+      st_last="$(_status_fragment "$1")"
+      sse_patch "${st_last}" || exit 0
       sse_patch "<div id=\"hb\" hidden data-t=\"$(date +%s)\"></div>" || exit 0
     fi
     ui_sig="$(_dir_sig "${HARNESS_ROOT}/plugins/web")"

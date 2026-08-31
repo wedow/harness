@@ -22,6 +22,8 @@ body{font:14px/1.5 system-ui,sans-serif;max-width:48rem;margin:0 auto;padding:0 
 form{display:flex;gap:.5rem;margin:0;padding:1rem 0;background:inherit;position:sticky;bottom:0}
 input[type=text],textarea{flex:1;min-width:0;padding:.5rem;border:1px solid #ccc;border-radius:4px;font:inherit}
 button{padding:.5rem 1rem}
+#stop-btn{padding:0 0 .25rem}
+#stop-btn button{background:#c22;color:#fff;border:none}
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
 #sidebar{position:fixed;top:0;bottom:0;left:0;width:230px;background:#f6f6f6;border-right:1px solid #ddd;padding:1rem;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:20}
@@ -167,6 +169,31 @@ _agent_status_line() { # $1 = session id
   if (( sub > 0 )); then out+=" · ${sub} subagent"; (( sub > 1 )) && out+="s"; fi
   printf '%s' "${out}"
 }
+# Kill the current turn: every process holding the session run-lock fd IS the
+# driver tree (launcher subshell, agent loop, hooks, provider curl, tools).
+# TERM first — the agent tool's TERM trap kills its pane, whose stream trap
+# kills the subagent loop — then hard-kill any survivors after a grace.
+_stop_agent() { # $1 = session id
+  local dir="${HARNESS_SESSIONS}/$1" p
+  [[ -f "${dir}/.lock" ]] || return 0
+  for p in $(fuser "${dir}/.lock" 2>/dev/null); do kill -TERM "${p}" 2>/dev/null || true; done
+  for _ in $(seq 1 20); do
+    fuser "${dir}/.lock" >/dev/null 2>&1 || return 0
+    sleep 0.1
+  done
+  for p in $(fuser "${dir}/.lock" 2>/dev/null); do kill -KILL "${p}" 2>/dev/null || true; done
+}
+
+# Stop button (morph target alongside agent-status so it appears only while
+# a turn is in flight).
+_stop_btn() { # $1 = session id
+  if _agent_running "${HARNESS_SESSIONS}/$1"; then
+    printf '<form id="stop-btn" method="post" action="/s/%s/stop"><button title="stop the current turn">&#9632; stop</button></form>' "$1"
+  else
+    printf '<form id="stop-btn" hidden></form>'
+  fi
+}
+
 _sb_spin() { # $1 = session id — sidebar spinner span (morph target for live updates)
   if _agent_running "${HARNESS_SESSIONS}/$1"; then
     printf '<span id="sb-%s" class="spin">&#10227;</span>' "$1"
@@ -185,6 +212,7 @@ _status_fragment() { # $1 = current session id
   else
     out='<div id="agent-status" hidden></div>'
   fi
+  out+="$(_stop_btn "${cur}")"
   while IFS= read -r s; do
     out+="$(_sb_spin "${s}")"
   done < <(_session_order | head -30)
@@ -343,6 +371,13 @@ handle_send() { # $1 = session id, message from form body
   HEADERS+=("Location: /s/$1")
 }
 
+handle_stop() { # $1 = session id — web equivalent of Ctrl-C on the driver
+  [[ -d "${HARNESS_SESSIONS}/$1" ]] || { handle_404; return; }
+  _stop_agent "$1"
+  STATUS=303
+  HEADERS+=("Location: /s/$1")
+}
+
 handle_404() { STATUS=404; HEADERS+=("Content-Type: text/plain"); BODY="not found"; }
 handle_500() { STATUS=500; HEADERS+=("Content-Type: text/plain"); BODY="${1:-internal error}"; }
 handle_400() { STATUS=400; HEADERS+=("Content-Type: text/plain"); BODY="${1:-bad request}"; }
@@ -390,6 +425,7 @@ $(_transcript "$1")
 </div>
 </div>
 <button id="scrollbtn" hidden title="scroll to bottom">↓</button>
+$(_stop_btn "$(html_escape "${id}")")
 <form method="post" action="/s/$(html_escape "${id}")">
   <textarea name="message" placeholder="reply…" rows="3" required autofocus></textarea>
   <button>send</button>

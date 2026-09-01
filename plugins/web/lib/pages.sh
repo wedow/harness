@@ -113,8 +113,20 @@ _session_order() {
 # Agent-running probe: the agent subshell holds fd 9 on .lock for its whole
 # lifetime, so an open-fd check (fuser, no locking) is the signal. Never use
 # flock -n to probe — it could steal the lock and drop a queued turn.
-_agent_running() { # $1 = session dir
+_agent_running() { # $1 = session dir — ANY lock-fd holder (incl. stragglers)
   fuser "${1}/.lock" >/dev/null 2>&1
+}
+
+# A real driver process for the session. _agent_running (fd holders) stays
+# true for minutes after the driver exits: fd 9 is inherited by the whole
+# tree, including orphaned tool commands living out their watchdog. Acting
+# on that signal alone orphaned a web-sent message (2026-08-25 18:44: the
+# insert path fired on a dead session — message saved, no driver launched).
+# NB: pgrep -f can match an investigator's own grep cmdlines; transient and
+# harmless next to the false-negative cost of fd-holder checking.
+_driver_alive() { # $1 = session id
+  # id followed by a space (message arg) or end of cmdline (resume mode)
+  pgrep -f "commands/agent ${1}( |\$)" >/dev/null 2>&1
 }
 
 # Insert a user message into a RUNNING session: the message lands in the
@@ -164,7 +176,7 @@ _subagent_count() { # $1 = session dir
 # 1 queued". Prints nothing and returns 1 when idle.
 _agent_status_line() { # $1 = session id
   local dir="${HARNESS_SESSIONS}/$1" sub out
-  _agent_running "${dir}" || return 1
+  _driver_alive "$1" || return 1
   sub="$(_subagent_count "${dir}")"
   out="&#10227; agent working…"
   if (( sub > 0 )); then out+=" · ${sub} subagent"; (( sub > 1 )) && out+="s"; fi
@@ -188,7 +200,7 @@ _stop_agent() { # $1 = session id
 # Stop button (morph target alongside agent-status so it appears only while
 # a turn is in flight).
 _stop_btn() { # $1 = session id
-  if _agent_running "${HARNESS_SESSIONS}/$1"; then
+  if _driver_alive "$1"; then
     printf '<form id="stop-btn" method="post" action="/s/%s/stop"><button title="stop the current turn">&#9632; stop</button></form>' "$1"
   else
     printf '<form id="stop-btn" hidden></form>'
@@ -196,7 +208,7 @@ _stop_btn() { # $1 = session id
 }
 
 _sb_spin() { # $1 = session id — sidebar spinner span (morph target for live updates)
-  if _agent_running "${HARNESS_SESSIONS}/$1"; then
+  if _driver_alive "$1"; then
     printf '<span id="sb-%s" class="spin">&#10227;</span>' "$1"
   else
     printf '<span id="sb-%s" hidden></span>' "$1"
@@ -365,7 +377,7 @@ handle_send() { # $1 = session id, message from form body
   [[ -d "${dir}" ]] || { handle_404; return; }
   local msg; msg="$(_form_field message)"
   [[ -n "${msg}" ]] || { handle_400 "empty message"; return; }
-  if _agent_running "${dir}"; then
+  if _driver_alive "$1"; then
     # Mid-turn: insert into the live conversation (picked up before the next
     # API call). Falling back to a queued second driver would delay guidance
     # by the remainder of a possibly hours-long turn.
@@ -373,6 +385,11 @@ handle_send() { # $1 = session id, message from form body
       handle_500 "could not insert message (seq collision); try again"
       return
     fi
+    # The driver can die between the check and the insert (its stragglers
+    # hold the lock fd, but no one remains to read messages). Launch a
+    # messageless driver — it resumes the existing history and picks up the
+    # just-inserted message instead of orphaning it.
+    _driver_alive "$1" || _launch_agent "$1" ""
   else
     _launch_agent "$1" "${msg}"
   fi
@@ -402,14 +419,18 @@ _form_field() {
 }
 
 # serialize agent runs per session (one in-flight turn at a time)
-_launch_agent() { # $1 = session id, $2 = message
+_launch_agent() { # $1 = session id, $2 = message (empty = resume history)
   local id=$1 dir="${HARNESS_SESSIONS}/$1"
   (
     # Blocking acquire: a message sent mid-turn queues behind the in-flight
     # run. flock -n would fail silently here and run a second concurrent
     # driver on the same session (duplicate subagents, racing writes).
     flock 9
-    "${_HS}" agent "${id}" "$2" >>"${dir}/serve.log" 2>&1
+    if [[ -n "$2" ]]; then
+      "${_HS}" agent "${id}" "$2" >>"${dir}/serve.log" 2>&1
+    else
+      "${_HS}" agent "${id}" >>"${dir}/serve.log" 2>&1
+    fi
   ) 9>"${dir}/.lock" &>/dev/null &
 }
 

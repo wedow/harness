@@ -14,20 +14,28 @@ source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
 source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"
 
 runs="${_tmpdir}/runs.log"
-_HS="${_tmpdir}/harness-stub"
-cat > "${_HS}" <<'STUB'
+# Stub driver at a path whose invocation matches the real driver signature
+# (".../plugins/core/commands/agent <session-id> <msg>") so _driver_alive
+# (pgrep) sees it. It holds the session lock like a real web driver.
+_HS_DIR="${_tmpdir}/harness-stub/plugins/core/commands"
+mkdir -p "${_HS_DIR}"
+cat > "${_HS_DIR}/agent" <<'STUB'
 #!/usr/bin/env bash
-# simulate a running driver: holds the session lock for a while
-(
-  exec 9>>"${HARNESS_SESSIONS}/$1/.lock"
-  flock 9
-  printf 'run %s\n' "$2" >> "${RUNS_LOG}"
-  sleep 2
-) &
-wait
+printf 'run %s\n' "$2" >> "${RUNS_LOG}"
+exec 9>>"${HARNESS_SESSIONS}/$1/.lock"
+flock 9
+sleep 2
 STUB
+chmod +x "${_HS_DIR}/agent"
+_HS="${_tmpdir}/harness-stub-run"
+cat > "${_HS}" <<'RUN'
+#!/usr/bin/env bash
+# _HS is invoked as "<root> agent <id> <msg>"; drop the literal "agent"
+shift
+exec "${RUN_STUB_DIR}/plugins/core/commands/agent" "$@"
+RUN
 chmod +x "${_HS}"
-export RUNS_LOG="${runs}"
+export RUN_STUB_DIR="${_tmpdir}/harness-stub" RUNS_LOG="${runs}"
 
 sid="20260101-000000-1"
 mkdir -p "${sessions}/${sid}/messages"

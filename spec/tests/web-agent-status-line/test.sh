@@ -26,9 +26,16 @@ touch "${dir}/.harness/sessions/sub-done/.exit_code"
 bash -c 'sleep 3; true # sessions/sub-live' &
 sub_pid=$!
 
-# Running driver (mid-turn messages are inserted into the transcript now,
-# so the status line reports subagents only).
-( exec 9>"${dir}/.lock"; flock 9; sleep 2 ) &
+# Running driver: a process matching the real driver signature (pgrep).
+mkdir -p "${_tmpdir}/stub/plugins/core/commands"
+cat > "${_tmpdir}/stub/plugins/core/commands/agent" <<'STUB'
+#!/usr/bin/env bash
+exec 9>>"${HARNESS_SESSIONS}/$1/.lock"
+flock 9
+sleep 2
+STUB
+chmod +x "${_tmpdir}/stub/plugins/core/commands/agent"
+( exec 9>"${dir}/.lock"; flock 9; "${_tmpdir}/stub/plugins/core/commands/agent" "$(basename "${dir}")" ) &
 holder=$!
 sleep 0.5
 

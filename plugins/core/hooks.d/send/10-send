@@ -165,7 +165,16 @@ if [[ -n "${stream_flag}" ]]; then
         if [[ "${_req}" =~ ^[1-9][0-9]*$ ]] && (( _req + _slack > _tmo )); then
           _tmo=$(( _req + _slack ))
         fi
+        _t0=$(date +%s)
         _r="$(cd "${_workdir}" && echo "${_input}" | timeout "${_tmo}" "${_bin}" --exec 2>&1)" && _e=false || _e=true
+        _rc=$?
+        # Forensic breadcrumb: an EMPTY error result is the "instant silent
+        # dispatch death" signature (20260901-151334: 14/24 agent calls
+        # pre-dispatched empty+error within a second, no session dir ever
+        # created). Record enough to pinpoint the path when it recurs.
+        if [[ "${_e}" == true && -z "${_r}" ]]; then
+          echo "[harness] dispatch empty-error: name=${_name} cid=${_cid} rc=${_rc} elapsed=$(( $(date +%s) - _t0 ))s tmo=${_tmo} in_bytes=$(printf '%s' "${_input}" | wc -c) bin=${_bin}" >> "${HARNESS_LOG}" 2>/dev/null || true
+        fi
         printf '%s' "${_r}" | jq -Rs --argjson e "${_e}" '{result: ., error: $e}' \
           > "${dispatch_dir}/${_cid}.json"
       ) &

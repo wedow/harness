@@ -14,13 +14,14 @@ printf 'alpha\nbravo\ncharlie\ndelta\necho\nfoxtrot\ngolf\nhotel\n' > "${f}"
 
 # anchors: read via hashline to get real ones
 hl() { awk -f "${HARNESS_ROOT}/plugins/core/lib/hashline.awk" "$1"; }
+tag() { md5sum "$1" | cut -c1-8; }
 a3="$(hl "${f}" | sed -n '3p' | cut -d: -f1)"   # 3#XX charlie
 a4="$(hl "${f}" | sed -n '4p' | cut -d: -f1)"   # 4#XX delta
 a8="$(hl "${f}" | sed -n '8p' | cut -d: -f1)"   # 8#XX hotel
 
 # 1. replace_range over 2 lines + insert after a later line in one call
-out="$(jq -c -n --arg a3 "$a3" --arg a4 "$a4" --arg a8 "$a8" \
-  '{path:"src.txt",edits:[
+out="$(jq -c -n --arg t "$(tag "$f")" --arg a3 "$a3" --arg a4 "$a4" --arg a8 "$a8" \
+  '{path:"src.txt",tag:$t,edits:[
      {at:$a3,end:$a4,content:["CHARLIE","DELTA","DELTA2"]},
      {after:$a8,content:["INDIA"]}]}' | "${tool}" --exec)" || { echo "FAIL: call errored"; echo "$out"; exit 1; }
 
@@ -32,17 +33,17 @@ echo "${out}" | grep -q "shift 1" || { echo "FAIL: no shift info"; echo "$out"; 
 echo "${out}" | grep -q "fresh anchors" || { echo "FAIL: no fresh anchors"; echo "$out"; exit 1; }
 
 # 2. delete: content null over one line
-out="$(jq -c -n --arg a1 "$(hl "${f}" | sed -n '1p' | cut -d: -f1)" \
-  '{path:"src.txt",edits:[{at:$a1,content:null}]}' | "${tool}" --exec)"
+out="$(jq -c -n --arg t "$(tag "$f")" --arg a1 "$(hl "${f}" | sed -n '1p' | cut -d: -f1)" \
+  '{path:"src.txt",tag:$t,edits:[{at:$a1,content:null}]}' | "${tool}" --exec)"
 assert_eq "delete line 1" "$(sed -n '1p' "${f}")" "bravo"
 
 # 3. insert at top: after "0"
-out="$(jq -c -n '{path:"src.txt",edits:[{after:"0",content:["TOP"]}]}' | "${tool}" --exec)"
+out="$(jq -c -n --arg t "$(tag "$f")" '{path:"src.txt",tag:$t,edits:[{after:"0",content:["TOP"]}]}' | "${tool}" --exec)"
 assert_eq "insert at top" "$(sed -n '1p' "${f}")" "TOP"
 
 # 4. content as a single string with newlines
 a2="$(hl "${f}" | sed -n '2p' | cut -d: -f1)"
-out="$(jq -c -n --arg a2 "$a2" '{path:"src.txt",edits:[{after:$a2,content:"x\ny"}]}' | "${tool}" --exec)"
+out="$(jq -c -n --arg t "$(tag "$f")" --arg a2 "$a2" '{path:"src.txt",tag:$t,edits:[{after:$a2,content:"x\ny"}]}' | "${tool}" --exec)"
 assert_eq "string content line 1" "$(sed -n '3p' "${f}")" "x"
 assert_eq "string content line 2" "$(sed -n '4p' "${f}")" "y"
 # 5. out-of-order listing: later-line edit listed FIRST, earlier edit grows
@@ -52,8 +53,8 @@ printf 'a1\na2\na3\na4\na5\na6\na7\na8\n' > "${f2}"
 a8="$(hl "${f2}" | sed -n '8p' | cut -d: -f1)"
 a2="$(hl "${f2}" | sed -n '2p' | cut -d: -f1)"
 a3="$(hl "${f2}" | sed -n '3p' | cut -d: -f1)"
-out="$(jq -c -n --arg a8 "$a8" --arg a2 "$a2" --arg a3 "$a3" \
-  '{path:"ooo.txt",edits:[
+out="$(jq -c -n --arg t "$(tag "$f2")" --arg a8 "$a8" --arg a2 "$a2" --arg a3 "$a3" \
+  '{path:"ooo.txt",tag:$t,edits:[
      {at:$a8,content:["e1","e2","e3"]},
      {at:$a2,end:$a3,content:["b1","b2","b3","b4","b5"]}]}' | "${tool}" --exec)" || { echo "$out"; exit 1; }
 assert_eq "ooo line 1" "$(sed -n '1p' "${f2}")" "a1"
@@ -70,7 +71,7 @@ echo "${out}" | grep -q "^11#" || { echo "FAIL: later edit not re-anchored at 11
 f3="${_tmpdir}/same.txt"
 printf 'x\ny\n' > "${f3}"
 a1="$(hl "${f3}" | sed -n '1p' | cut -d: -f1)"
-"${tool}" --exec <<< "$(jq -c -n --arg a1 "$a1" \
-  '{path:"same.txt",edits:[{after:$a1,content:["first"]},{after:$a1,content:["second"]}]}')" >/dev/null
+"${tool}" --exec <<< "$(jq -c -n --arg t "$(tag "$f3")" --arg a1 "$a1" \
+  '{path:"same.txt",tag:$t,edits:[{after:$a1,content:["first"]},{after:$a1,content:["second"]}]}')" >/dev/null
 assert_eq "same-anchor order" "$(sed -n '2p' "${f3}")" "first"
 assert_eq "same-anchor order 2" "$(sed -n '3p' "${f3}")" "second"

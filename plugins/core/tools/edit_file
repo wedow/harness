@@ -63,7 +63,7 @@ case "${1:-}" in
         "description": "Optional. Short phrase describing what this call is trying to accomplish, phrased for a human skimming the transcript. Ignored by the tool itself; UIs show it as the collapsed summary over this call's result."
       }
     },
-    "required": ["path", "edits"]
+    "required": ["path", "tag", "edits"]
   }
 }
 JSON
@@ -76,6 +76,7 @@ JSON
     edits_json="$(echo "${input}" | jq -c '.edits')"
 
     [[ -n "${path}" && "${path}" != "null" ]] || { echo "error: path is required"; exit 1; }
+    [[ -n "${tag_in}" ]] || { echo "error: tag is required — read_file first"; exit 1; }
     [[ "${path}" != /* ]] && path="${HARNESS_CWD:-${PWD}}/${path}"
     [[ -f "${path}" ]] || { echo "error: file not found: ${path}"; exit 1; }
 
@@ -84,7 +85,7 @@ JSON
 
     # --- staleness: refuse if the file changed since the anchored read ---
     tag_old="$(md5sum "${path}" | cut -c1-8)"
-    if [[ -n "${tag_in}" && "${tag_in}" != "${tag_old}" ]]; then
+    if [[ "${tag_in}" != "${tag_old}" ]]; then
       echo "error: file changed since read (tag ${tag_in} != current ${tag_old}) — re-read ${path}"
       exit 1
     fi

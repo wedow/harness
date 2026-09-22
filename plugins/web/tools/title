@@ -32,10 +32,12 @@ JSON
   --exec)
     [[ -f "${conf}" ]] || { echo "error: no session"; exit 1; }
     grep -q '^title_locked=.' "${conf}" && { echo "error: title locked"; exit 1; }
-    t="$(cat | jq -r '.title // empty')"
-    [[ -n "${t}" ]] || { echo "error: empty title"; exit 1; }
+    t="$(jq -ser 'if length == 1 then .[0].title | select(type == "string" and length > 0) | select((explode | any(. < 32 or . == 127)) | not) else empty end')" || {
+      echo "error: title must be nonempty and contain no control characters"
+      exit 1
+    }
     tmp="$(mktemp)"
-    awk -v t="${t}" 'BEGIN{n=0} /^title=/{print "title=" t; n=1; next} {print} END{if(!n) print "title=" t}' \
+    TITLE_VALUE="${t}" awk 'BEGIN{n=0; t=ENVIRON["TITLE_VALUE"]} /^title=/{print "title=" t; n=1; next} {print} END{if(!n) print "title=" t}' \
       "${conf}" > "${tmp}" && mv "${tmp}" "${conf}"
     echo "title set: ${t}"
     ;;

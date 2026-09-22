@@ -232,6 +232,13 @@ JSON
     fi
 
     chmod --reference="${path}" "${work}" 2>/dev/null || true
+    # Parsing and building the work copy can take time. Refuse to replace a
+    # write that landed after the first tag/anchor check.
+    tag_latest="$(md5sum "${path}" | cut -c1-8)"
+    if [[ "${tag_in}" != "${tag_latest}" ]]; then
+      echo "error: file changed since read (tag ${tag_in} != current ${tag_latest}) — re-read ${path}"
+      exit 1
+    fi
     mv "${work}" "${path}"
     tag_new="$(md5sum "${path}" | cut -c1-8)"
 

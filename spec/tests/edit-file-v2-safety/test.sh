@@ -135,3 +135,26 @@ SH
   assert_eq "failed move: file untouched" "$(cat "${f}")" "${before}"
   assert_eq "work is on destination filesystem" "$(cat "${_tmpdir}/source-device")" "$(stat -c %d "${f}")"
 fi
+
+# 10. A write after the initial tag check must not be overwritten at commit.
+printf 'original\n' > "${f}"
+a1="$(hl "${f}" | sed -n '1p' | cut -d: -f1)"
+mkdir -p "${_tmpdir}/race-bin"
+real_chmod="$(command -v chmod)"
+cat > "${_tmpdir}/race-bin/chmod" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+"${EDIT_TEST_REAL_CHMOD}" "$@"
+if [[ "$1" == --reference=* ]]; then
+  printf 'concurrent change\n' > "${EDIT_TEST_TARGET}"
+fi
+SH
+chmod +x "${_tmpdir}/race-bin/chmod"
+out="$(jq -c -n --arg t "$(tag "$f")" --arg a1 "$a1" \
+  '{path:"safe.txt",tag:$t,edits:[{at:$a1,content:["replacement"]}]}' | \
+  env PATH="${_tmpdir}/race-bin:${PATH}" EDIT_TEST_TARGET="${f}" \
+    EDIT_TEST_REAL_CHMOD="${real_chmod}" "${tool}" --exec 2>&1)" && {
+  echo "FAIL: late concurrent write should cause the edit to fail"; exit 1
+}
+echo "${out}" | grep -q "changed since read" || { echo "FAIL: wrong late-write message: ${out}"; exit 1; }
+assert_eq "late concurrent write preserved" "$(cat "${f}")" "concurrent change"

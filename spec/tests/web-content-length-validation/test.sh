@@ -7,7 +7,7 @@ setup
 handler="${HARNESS_ROOT}/plugins/web/lib/handler"
 marker="${_tmpdir}/arithmetic-ran"
 
-request() { printf '%s\r\n' 'POST /missing HTTP/1.1' "$1" '' | "$handler"; }
+request() { printf '%s\r\n' 'POST /missing HTTP/1.1' 'Host: 127.0.0.1:8080' "$1" '' | "$handler"; }
 
 # A Bash array subscript in arithmetic context can evaluate command
 # substitutions. Keep the marker inside the test sandbox.

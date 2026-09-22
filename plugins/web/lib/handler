@@ -31,7 +31,25 @@ while IFS= read -r -t 10 h; do
   h="${h%$'\r'}"; [[ -z "${h}" ]] && break
   key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"
 done
+# The server listens on loopback, but DNS rebinding can still give it a
+# foreign Host. Check every method, including transcript reads over GET.
+host="${HTTP_HEADERS[host]:-}"
+host="${host,,}"
+if [[ ! "${host}" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]]; then
+  STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden host"
+  respond_request; exit 0
+fi
 if [[ "${METHOD}" == "POST" ]]; then
+  # Browsers can send cross-origin forms to loopback. Reject them before any
+  # state-changing route runs. Local HTTP clients may omit Origin.
+  origin="${HTTP_HEADERS[origin]:-}"
+  fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
+  if { [[ -n "${origin}" ]] && [[ "${origin}" != "http://${host}" ]]; } ||
+     { [[ -z "${origin}" && -n "${fetch_site}" ]] &&
+       [[ "${fetch_site}" != "same-origin" && "${fetch_site}" != "none" ]]; }; then
+    STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden origin"
+    respond_request; exit 0
+  fi
   clen="${HTTP_HEADERS[content-length]:-0}"
   # Bash recursively evaluates variable values in arithmetic contexts. A
   # header such as BODY[$(command)] must never reach an arithmetic expression.

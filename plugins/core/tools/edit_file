@@ -54,7 +54,8 @@ case "${1:-}" in
               "description": "Replacement or inserted lines (array of strings preferred). null with at/end deletes the range.",
               "items": { "type": "string" }
             }
-          }
+          },
+          "required": ["content"]
         }
       },
       "intent": {
@@ -107,6 +108,10 @@ JSON
 
     for (( i = 0; i < num_edits; i++ )); do
       e="$(echo "${edits_json}" | jq -c ".[$i]")"
+      echo "${e}" | jq -e 'has("content")' >/dev/null || {
+        echo "error: edit ${i}: content is required (use null to delete a range)"
+        exit 1
+      }
       at="$(echo "${e}"  | jq -r '.at // empty')"
       end="$(echo "${e}" | jq -r '.end // empty')"
       after="$(echo "${e}" | jq -r '.after // empty')"

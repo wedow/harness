@@ -65,3 +65,17 @@ printf 'a\r\nb\r\n' > "${f}"
 a1="$(hl "${f}" | sed -n '1p' | cut -d: -f1)"
 "${tool}" --exec <<< "$(jq -c -n --arg a1 "$a1" '{path:"safe.txt",edits:[{after:$a1,content:["mid"]}]}')" >/dev/null
 grep -q $'^mid\r$' "${f}" || { echo "FAIL: inserted line lacks CRLF"; od -c "${f}"; exit 1; }
+
+# 7. omitted content must not be interpreted as an explicit deletion
+printf 'one\ntwo\nthree\n' > "${f}"
+before="$(cat "${f}")"
+a1="$(hl "${f}" | sed -n '1p' | cut -d: -f1)"
+a3="$(hl "${f}" | sed -n '3p' | cut -d: -f1)"
+out="$(jq -c -n --arg a1 "$a1" --arg a3 "$a3" \
+  '{path:"safe.txt",edits:[{at:$a1},{at:$a3,content:["THREE"]}]}' | "${tool}" --exec 2>&1)" && {
+  echo "FAIL: omitted content should error"; exit 1
+}
+echo "$out" | grep -q "content is required" || { echo "FAIL: wrong missing-content message: $out"; exit 1; }
+assert_eq "missing content: file untouched" "$(cat "${f}")" "$before"
+"${tool}" --schema | jq -e '.input_schema.properties.edits.items.required | index("content")' >/dev/null \
+  || { echo "FAIL: schema should require content in every edit"; exit 1; }

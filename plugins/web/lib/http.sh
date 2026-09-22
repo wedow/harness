@@ -66,11 +66,11 @@ respond_sse() {
 # morphs it into the DOM by top-level element id.
 # socat execs us with SIGPIPE ignored, so detect dead sockets via the
 # write error instead: every printf returns nonzero on EPIPE.
-sse_patch() { # $1 = fragment html, $2 = "append" to add new elements (default morphs by id)
+sse_patch() { # $1 = fragment html, $2 = "append" to add new elements, $3 = target selector (default body)
   local line
   { printf 'event: datastar-patch-elements\n'; } 2>/dev/null || return 1
   if [[ "${2:-}" == "append" ]]; then
-    { printf 'data: selector body\ndata: mode append\n'; } 2>/dev/null || return 1
+    { printf 'data: selector %s\ndata: mode append\n' "${3:-body}"; } 2>/dev/null || return 1
   fi
     # SSE treats a lone CR as a line terminator, so a CR inside a fragment
     # line would split the event mid-HTML and corrupt the client-side morph

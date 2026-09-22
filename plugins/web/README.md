@@ -26,9 +26,10 @@ node; the only asset is the vendored `public/datastar.js` (v1.0.2).
 
 Each connection is a long-lived handler process that pushes:
 
-1. **Transcript re-render** — any file change under `$SESSION` (mtime/size
-   fingerprint via `_dir_sig`) triggers a full `<div id="transcript">`
-   fragment. Datastar morphs it in place by id.
+1. **Transcript patches** — message file changes send changed message
+   elements. Existing messages morph by id; new messages append inside
+   `#transcript`. Removed or mid-inserted files and turn boundaries trigger
+   a full transcript render.
 2. **Live UI reload** — changes to this plugin's own files push a hidden
    `<div id="uireload" data-init="location.reload()">`; every open tab
    hard-reloads and picks up new markup/CSS. Editing the plugin is hot.
@@ -67,5 +68,5 @@ means resync.
   <frag> append`).
 - Datastar `retry` defaults to `'auto'`, which never retries a clean
   stream EOF — only network errors. Use `retry: 'always'`.
-- Everything runs over localhost; fragments are full re-renders and that
-  is fine.
+- Everything runs over localhost; message changes use small patches, with
+  full transcript resyncs at turn boundaries.

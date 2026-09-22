@@ -337,9 +337,8 @@ handle_events() { # $1 = id
       continue
     fi
     # --- transcript deltas: per-message-file change detection ---
-    # A changed message renders as its own <div id="mXXXX"> fragment; the
-    # morph merges it in place, so a new message costs its own bytes instead
-    # of a full transcript. .stream churn no longer triggers renders.
+    # Existing messages morph by id; new messages append inside #transcript.
+    # .stream churn does not trigger renders.
     msg_cur="$(stat -c '%n %Y %s' "${dir}"/messages/*.md 2>/dev/null | sort)"
     if [[ "${msg_cur}" != "${msg_last}" ]]; then
       if [[ -z "${msg_last}" ]]; then
@@ -364,7 +363,21 @@ handle_events() { # $1 = id
         if [[ "${full}" == true ]]; then
           sse_patch "$(_transcript "$1")" || exit 0
         else
-          sse_patch "$(printf '<div id="transcript">'; _msgrender ${changed}; printf '</div>')" || exit 0
+          local -a modified=() added=()
+          while IFS= read -r f; do
+            [[ -z "${f}" ]] && continue
+            if printf '%s\n' "${msg_last}" | awk '{print $1}' | grep -qxF "${f}"; then
+              modified+=("${f}")
+            else
+              added+=("${f}")
+            fi
+          done <<< "${changed}"
+          if (( ${#modified[@]} > 0 )); then
+            sse_patch "$(_msgrender "${modified[@]}")" || exit 0
+          fi
+          if (( ${#added[@]} > 0 )); then
+            sse_patch "$(_msgrender "${added[@]}")" append '#transcript' || exit 0
+          fi
         fi
       fi
       # the message's own render supersedes any live streaming block

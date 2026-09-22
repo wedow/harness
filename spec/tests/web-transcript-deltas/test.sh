@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# web-transcript-deltas — message changes push only the changed elements;
+# web-transcript-deltas — message changes patch individual elements without
+# replacing the transcript's other children;
 # turn-end (.stream done/stop) forces a full re-sync; mid-inserted files
 # fall back to a full render (morph positioning can't be trusted).
 set -euo pipefail
@@ -23,7 +24,7 @@ timeout 10 bash -c "
   respond_sse() { :; }
   sse_patch() {
     case \"\$1\" in
-      *'id=\"transcript\"'*) printf '=== PUSH\n%s\n=== END\n' \"\$1\" >> '${_tmpdir}/pushes' ;;
+      *'id=\"transcript\"'*|*'id=\"m'[0-9]*) printf '=== PUSH %s\n%s\n=== END\n' \"\${2:-outer}:\${3:-}\" \"\$1\" >> '${_tmpdir}/pushes' ;;
     esac
     return 0
   }
@@ -44,19 +45,36 @@ sleep 1.5
 [[ "$(n_pushes)" == "2" ]] || { echo "FAIL: no delta push after append (have $(n_pushes))"; kill $hpid 2>/dev/null; exit 1; }
 last="$(sed -n "/=== END/!d;p" "${_tmpdir}/pushes" >/dev/null; awk '/=== PUSH/{buf="";p=1;next} /=== END/{p=0;last=buf;next} p{buf=buf $0 "\n"} END{printf "%s",last}' "${_tmpdir}/pushes")"
 echo "${last}" | grep -q 'id="m0002"' || { echo "FAIL: delta missing new message"; kill $hpid 2>/dev/null; exit 1; }
+[[ "$(grep '=== PUSH' "${_tmpdir}/pushes" | tail -1)" == '=== PUSH append:#transcript' ]] \
+  || { echo "FAIL: new message must append inside transcript"; kill $hpid 2>/dev/null; exit 1; }
+if echo "${last}" | grep -q 'id="transcript"'; then
+  echo "FAIL: delta morphs transcript wrapper and removes older messages"; kill $hpid 2>/dev/null; exit 1
+fi
 if echo "${last}" | grep -q 'id="m0001"'; then
   echo "FAIL: delta re-sent unchanged message (not a delta)"; kill $hpid 2>/dev/null; exit 1
 fi
 
-# 3. turn-end done event -> full push (both messages)
+# 3. modified message -> morph that message only; preserve its siblings
+msg 0001 user "first, revised"
+sleep 1.2
+[[ "$(n_pushes)" == "3" ]] || { echo "FAIL: no patch after edit"; kill $hpid 2>/dev/null; exit 1; }
+last="$(awk '/=== PUSH/{buf="";p=1;next} /=== END/{p=0;last=buf;next} p{buf=buf $0 "\n"} END{printf "%s",last}' "${_tmpdir}/pushes")"
+[[ "$(grep '=== PUSH' "${_tmpdir}/pushes" | tail -1)" == '=== PUSH outer:' ]] \
+  || { echo "FAIL: modified message must morph by id"; kill $hpid 2>/dev/null; exit 1; }
+echo "${last}" | grep -q 'id="m0001"' || { echo "FAIL: modified message missing"; kill $hpid 2>/dev/null; exit 1; }
+if echo "${last}" | grep -q 'id="transcript"'; then
+  echo "FAIL: modified message morphs transcript wrapper"; kill $hpid 2>/dev/null; exit 1
+fi
+
+# 4. turn-end done event -> full push (both messages)
 printf '{"type":"done"}\n' >> "${dir}/.stream"
 sleep 1.5
-[[ "$(n_pushes)" == "3" ]] || { echo "FAIL: no full push after done (have $(n_pushes))"; kill $hpid 2>/dev/null; exit 1; }
+[[ "$(n_pushes)" == "4" ]] || { echo "FAIL: no full push after done (have $(n_pushes))"; kill $hpid 2>/dev/null; exit 1; }
 last="$(awk '/=== PUSH/{buf="";p=1;next} /=== END/{p=0;last=buf;next} p{buf=buf $0 "\n"} END{printf "%s",last}' "${_tmpdir}/pushes")"
 echo "${last}" | grep -q 'id="m0001"' && echo "${last}" | grep -q 'id="m0002"' \
   || { echo "FAIL: full push missing messages"; kill $hpid 2>/dev/null; exit 1; }
 
-# 4. mid-inserted file (sorts before the current tail) -> full fallback
+# 5. mid-inserted file (sorts before the current tail) -> full fallback
 msg 0003 user "tail"
 sleep 1.2
 msg 0002a user "middle"

@@ -8,6 +8,16 @@ setup
 
 source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
 
+# Appended transcript messages must target the transcript, while the default
+# append target used by agent-pushed UI fragments remains body.
+out="$(sse_patch '<div id="m0002">second</div>' append '#transcript')"
+printf '%s' "${out}" | grep -qFx 'data: selector #transcript' \
+  && printf '%s' "${out}" | grep -qFx 'data: mode append' \
+  || { echo "FAIL: transcript append patch target/mode wrong: ${out}"; exit 1; }
+out="$(sse_patch '<div id="ui">hello</div>' append)"
+printf '%s' "${out}" | grep -qFx 'data: selector body' \
+  || { echo "FAIL: default append target changed: ${out}"; exit 1; }
+
 # 1. mid-line CR (e.g. CRLF-bearing tool result content)
 out="$(sse_patch "$(printf '<div id="x">before\rafters</div>')")"
 if printf '%s' "${out}" | grep -q $'\r'; then

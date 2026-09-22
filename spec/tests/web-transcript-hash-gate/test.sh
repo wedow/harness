@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# web-transcript-hash-gate — .stream-only churn must not re-transmit the
-# transcript; a real message change must.
+# web-transcript-hash-gate — .stream-only churn must not patch messages;
+# a real message change must.
 set -euo pipefail
 source "${SPEC_DIR}/helpers.sh"
 setup
@@ -23,7 +23,7 @@ source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"
 respond_sse() { :; }
 pushes=0
 sse_patch() {
-  [[ "$1" == *'id="transcript"'* ]] && pushes=$((pushes + 1))
+  [[ "$1" == *'id="transcript"'* || "$1" == *'id="m'[0-9]* ]] && pushes=$((pushes + 1))
   return 0
 }
 
@@ -48,7 +48,7 @@ timeout 5 bash -c "
   source '${HARNESS_ROOT}/plugins/web/lib/pages.sh'
   respond_sse() { :; }
   sse_patch() {
-    [[ \"\$1\" == *'id=\"transcript\"'* ]] && echo PUSH >> '${_tmpdir}/pushes'
+    [[ \"\$1\" == *'id=\"transcript\"'* || \"\$1\" == *'id=\"m'[0-9]* ]] && echo PUSH >> '${_tmpdir}/pushes'
     return 0
   }
   handle_events '${sess}'
@@ -59,6 +59,6 @@ n="$(wc -l < "${_tmpdir}/pushes" 2>/dev/null | tr -d ' ' || echo 0)"
 n="${n:-0}"
 # exactly 2: initial sync + the real message change (churn sends nothing)
 if [[ "${n}" != "2" ]]; then
-  echo "FAIL: expected 2 transcript pushes (initial + real change), got ${n}"
+  echo "FAIL: expected 2 message patches (initial + real change), got ${n}"
   exit 1
 fi

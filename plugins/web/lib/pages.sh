@@ -325,7 +325,7 @@ handle_session() { # $1 = id
 # the whole directory; fifos are removed when the client disconnects.
 handle_events() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1" ui_sig ui_last="" fifo line beat=0 st_last="" ti_last=""
-  local msg_cur="" msg_last="" changed removed max_old full f
+  local msg_cur="" msg_last="" changed="" removed max_old full f
   local ssz stream_off=0 stream_partial="" stream_prefix_len=0 stream_prefix_sig="" stream_replaced
   local force_full=false ev delta escaped live_buf="" live_last="" error_text="" error_last=""
   [[ -d "${dir}" ]] || { handle_404; return; }
@@ -335,7 +335,9 @@ handle_events() { # $1 = id
   find "${dir}/.ui" -name '*.fifo' -mmin +30 -delete 2>/dev/null # stale ones from killed handlers
   fifo="${dir}/.ui/$$.fifo"
   mkfifo "${fifo}" 2>/dev/null
-  trap 'rm -f "${fifo}"' EXIT
+  local fifo_cleanup
+  printf -v fifo_cleanup '%q' "${fifo}"
+  trap "rm -f -- ${fifo_cleanup}" EXIT
   exec 7<>"${fifo}"
   while :; do
     if IFS= read -r -t 0.5 line <&7; then

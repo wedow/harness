@@ -75,3 +75,32 @@ a1="$(hl "${f3}" | sed -n '1p' | cut -d: -f1)"
   '{path:"same.txt",tag:$t,edits:[{after:$a1,content:["first"]},{after:$a1,content:["second"]}]}')" >/dev/null
 assert_eq "same-anchor order" "$(sed -n '2p' "${f3}")" "first"
 assert_eq "same-anchor order 2" "$(sed -n '3p' "${f3}")" "second"
+
+# 7. inserting after an unterminated final line creates a separate line
+f4="${_tmpdir}/no-final-newline.txt"
+printf 'alpha' > "${f4}"
+a1="$(hl "${f4}" | sed -n '1p' | cut -d: -f1)"
+out="$(jq -c -n --arg t "$(tag "$f4")" --arg a1 "$a1" \
+  '{path:"no-final-newline.txt",tag:$t,edits:[{after:$a1,content:["beta"]}]}' | "${tool}" --exec)"
+printf 'alpha\nbeta\n' | cmp -s - "${f4}" || { echo "FAIL: inserted line joined unterminated final line"; od -c "${f4}"; exit 1; }
+echo "$out" | grep -Fq "$(hl "${f4}" | sed -n '2p')" || { echo "FAIL: missing fresh anchor for inserted line: $out"; exit 1; }
+echo "$out" | grep -q '^file now 2 lines$' || { echo "FAIL: wrong line count after insert: $out"; exit 1; }
+
+# Multiple inserts at that boundary retain their order and distinct anchors.
+printf 'alpha' > "${f4}"
+a1="$(hl "${f4}" | sed -n '1p' | cut -d: -f1)"
+out="$(jq -c -n --arg t "$(tag "$f4")" --arg a1 "$a1" \
+  '{path:"no-final-newline.txt",tag:$t,edits:[{after:$a1,content:["beta"]},{after:$a1,content:["gamma"]}]}' | "${tool}" --exec)"
+printf 'alpha\nbeta\ngamma\n' | cmp -s - "${f4}" || { echo "FAIL: same-anchor inserts after unterminated line failed"; od -c "${f4}"; exit 1; }
+for line in 2 3; do
+  echo "$out" | grep -Fq "$(hl "${f4}" | sed -n "${line}p")" || { echo "FAIL: missing fresh anchor for line ${line}: $out"; exit 1; }
+done
+echo "$out" | grep -q '^file now 3 lines$' || { echo "FAIL: wrong line count for same-anchor inserts: $out"; exit 1; }
+
+# Preserve CRLF when the final line lacks its terminator.
+printf 'alpha\r\nbeta' > "${f4}"
+a2="$(hl "${f4}" | sed -n '2p' | cut -d: -f1)"
+out="$(jq -c -n --arg t "$(tag "$f4")" --arg a2 "$a2" \
+  '{path:"no-final-newline.txt",tag:$t,edits:[{after:$a2,content:["gamma"]}]}' | "${tool}" --exec)"
+printf 'alpha\r\nbeta\r\ngamma\r\n' | cmp -s - "${f4}" || { echo "FAIL: CRLF insert after unterminated final line failed"; od -c "${f4}"; exit 1; }
+echo "$out" | grep -Fq "$(hl "${f4}" | sed -n '3p')" || { echo "FAIL: missing CRLF insert anchor: $out"; exit 1; }

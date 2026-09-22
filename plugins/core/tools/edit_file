@@ -210,7 +210,11 @@ JSON
           cat "${cf}"
           tail -n +$(( t + 1 )) "${work}"
         else
-          head -n "${s}" "${work}"
+          head -n "${s}" "${work}" > "${tmpdir}/prefix"
+          cat "${tmpdir}/prefix"
+          if [[ -s "${tmpdir}/prefix" && "$(tail -c 1 "${tmpdir}/prefix" | od -An -tu1 | tr -d '[:space:]')" != 10 ]]; then
+            if [[ "${crlf}" == true ]]; then printf '\r\n'; else printf '\n'; fi
+          fi
           cat "${cf}"
           tail -n +$(( s + 1 )) "${work}"
         fi

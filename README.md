@@ -246,6 +246,8 @@ Provider-specific assemble hooks (e.g., `plugins/anthropic/hooks.d/assemble/10-m
 | `HARNESS_CURL_SPEED_TIME` | `60` | Provider streaming inactivity abort (seconds without bytes) |
 | `HARNESS_THINKING` | provider default | Thinking-effort knob passed to adaptive-thinking models |
 | `HARNESS_SERVE_PORT` | `8080` | Web UI port (`harness serve`) |
+| `HARNESS_WEB_ALLOWED_ORIGINS` | unset | Exact additional browser origins for the web UI (also permits their `Host` names) |
+| `HARNESS_WEB_ALLOWED_HOSTS` | unset | Exact additional `Host` header values for the web UI |
 
 Provider-specific env vars (API keys, endpoints, etc.) are listed by `hs help` and documented via each provider's `--env` flag.
 

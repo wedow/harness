@@ -31,11 +31,49 @@ while IFS= read -r -t 10 h; do
   h="${h%$'\r'}"; [[ -z "${h}" ]] && break
   key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"
 done
+# Exact allowlists for deployments behind a loopback reverse proxy. A trusted
+# origin also permits its hostname as Host; proxies that rewrite Host to
+# loopback work with the same origin setting.
+_web_host_allowed() { # $1 = lowercased Host header
+  local allowed
+  local -a hosts origins
+  [[ "$1" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]] && return 0
+  IFS=', ' read -r -a hosts <<< "${HARNESS_WEB_ALLOWED_HOSTS:-}"
+  for allowed in "${hosts[@]}"; do
+    [[ "$1" == "${allowed,,}" ]] && return 0
+  done
+  IFS=', ' read -r -a origins <<< "${HARNESS_WEB_ALLOWED_ORIGINS:-}"
+  for allowed in "${origins[@]}"; do
+    if [[ "${allowed}" =~ ^https?://([a-zA-Z0-9.-]+(:[0-9]{1,5})?)$ ]] &&
+       [[ "$1" == "${BASH_REMATCH[1],,}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_web_origin_allowed() { # $1 = Origin header, $2 = lowercased Host header
+  local allowed
+  local -a hosts origins
+  if [[ "$1" == "http://$2" ]]; then
+    [[ "$2" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]] && return 0
+    IFS=', ' read -r -a hosts <<< "${HARNESS_WEB_ALLOWED_HOSTS:-}"
+    for allowed in "${hosts[@]}"; do
+      [[ "$2" == "${allowed,,}" ]] && return 0
+    done
+  fi
+  IFS=', ' read -r -a origins <<< "${HARNESS_WEB_ALLOWED_ORIGINS:-}"
+  for allowed in "${origins[@]}"; do
+    [[ "$1" == "${allowed}" ]] && return 0
+  done
+  return 1
+}
+
 # The server listens on loopback, but DNS rebinding can still give it a
 # foreign Host. Check every method, including transcript reads over GET.
 host="${HTTP_HEADERS[host]:-}"
 host="${host,,}"
-if [[ ! "${host}" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]]; then
+if ! _web_host_allowed "${host}"; then
   STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden host"
   respond_request; exit 0
 fi
@@ -44,7 +82,7 @@ if [[ "${METHOD}" == "POST" ]]; then
   # state-changing route runs. Local HTTP clients may omit Origin.
   origin="${HTTP_HEADERS[origin]:-}"
   fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
-  if { [[ -n "${origin}" ]] && [[ "${origin}" != "http://${host}" ]]; } ||
+  if { [[ -n "${origin}" ]] && ! _web_origin_allowed "${origin}" "${host}"; } ||
      { [[ -z "${origin}" && -n "${fetch_site}" ]] &&
        [[ "${fetch_site}" != "same-origin" && "${fetch_site}" != "none" ]]; }; then
     STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden origin"

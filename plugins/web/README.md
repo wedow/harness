@@ -8,6 +8,26 @@ node; the only asset is the vendored `public/datastar.js` (v1.0.2).
     lib/http.sh        HTTP/SSE primitives, html escaping
     lib/pages.sh       routes, layout, transcript renderer, SSE hub
 
+## Reverse proxies and allowed origins
+
+The listener stays on `127.0.0.1`. Requests normally need a loopback
+`Host`, and browser POSTs need a matching `http://` Origin. To serve it at a
+Tailscale or other HTTPS proxy address, set the exact public origin before
+starting `harness serve`:
+
+```bash
+export HARNESS_WEB_ALLOWED_ORIGINS='https://agent.example-tailnet.ts.net'
+bin/harness serve
+```
+
+An allowed origin also allows its hostname in `Host`, whether the proxy
+preserves that header or rewrites it to loopback. If a proxy uses another
+`Host` value, add it with `HARNESS_WEB_ALLOWED_HOSTS`, for example
+`HARNESS_WEB_ALLOWED_HOSTS=proxy.internal:8080`. Multiple entries in either
+variable may be separated by commas or spaces. Entries are exact, including
+scheme and port for origins and port for hosts; wildcards are not supported.
+Restart the server after changing these variables.
+
 ## Model
 
 - socat forks one `handler` bash process per connection.

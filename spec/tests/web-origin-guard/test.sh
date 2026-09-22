@@ -37,6 +37,30 @@ request 'Host: 127.0.0.1:8080' 'Sec-Fetch-Site: cross-site' > "${_tmpdir}/respon
 request 'Host: 127.0.0.1:8080' > "${_tmpdir}/response"
 [[ "$(status)" == 'HTTP/1.1 404 Not Found' ]] || { echo 'FAIL: local client without Origin rejected'; exit 1; }
 
+# A reverse proxy can serve the loopback listener under an explicitly trusted
+# HTTPS origin. Its browser Host may be the proxy name or rewritten to loopback.
+export HARNESS_WEB_ALLOWED_ORIGINS='https://agent.tailnet.ts.net'
+printf '%s\r\n' 'GET / HTTP/1.1' 'Host: agent.tailnet.ts.net' '' | "$handler" > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 200 OK' ]] || { echo 'FAIL: configured proxy Host rejected'; exit 1; }
+request 'Host: agent.tailnet.ts.net' 'Origin: https://agent.tailnet.ts.net' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 404 Not Found' ]] || { echo 'FAIL: configured HTTPS origin rejected'; exit 1; }
+request 'Host: 127.0.0.1:8080' 'Origin: https://agent.tailnet.ts.net' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 404 Not Found' ]] || { echo 'FAIL: configured origin rejected behind a Host-rewriting proxy'; exit 1; }
+request 'Host: agent.tailnet.ts.net' 'Origin: https://evil.example' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 403 Forbidden' ]] || { echo 'FAIL: foreign origin accepted for trusted Host'; exit 1; }
+request 'Host: agent.tailnet.ts.net' 'Origin: http://agent.tailnet.ts.net' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 403 Forbidden' ]] || { echo 'FAIL: HTTP origin accepted for HTTPS-only trust'; exit 1; }
+request 'Host: other.tailnet.ts.net' 'Origin: https://agent.tailnet.ts.net' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 403 Forbidden' ]] || { echo 'FAIL: unconfigured Host accepted'; exit 1; }
+unset HARNESS_WEB_ALLOWED_ORIGINS
+
+export HARNESS_WEB_ALLOWED_HOSTS='agent.tailnet.ts.net:8080,second.tailnet.ts.net'
+request 'Host: agent.tailnet.ts.net:8080' 'Origin: http://agent.tailnet.ts.net:8080' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 404 Not Found' ]] || { echo 'FAIL: configured HTTP Host rejected'; exit 1; }
+request 'Host: second.tailnet.ts.net' 'Origin: http://second.tailnet.ts.net' > "${_tmpdir}/response"
+[[ "$(status)" == 'HTTP/1.1 404 Not Found' ]] || { echo 'FAIL: second configured Host rejected'; exit 1; }
+unset HARNESS_WEB_ALLOWED_HOSTS
+
 # Exercise a real form route as well: accepted requests create one session,
 # while a foreign origin must leave the session directory untouched.
 export HARNESS_MODEL=mock

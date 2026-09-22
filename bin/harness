@@ -131,8 +131,10 @@ agent_loop() {
       state="error"; context="${result}"; continue
     fi
 
+    [[ "${state}" == "start" ]] && _print_startup_summary "${result}"
+
     state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
-    context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
+    context="$(echo "${result}" | jq -c 'del(.next_state, .startup_summary)' 2>/dev/null)" || context='{}'
 
     (( ++iterations > HARNESS_MAX_TURNS * 3 )) && { _log "safety: exceeded max iterations"; break; }
   done
@@ -146,6 +148,30 @@ agent_loop() {
 # --------------------------------------------------------------------------- #
 _log() { echo "[harness] $*" >> "${HARNESS_LOG}"; }
 _die() { echo "harness: $*" >&2; exit 1; }
+
+_print_startup_summary() {
+  local result="$1"
+  local has_summary agents skills
+  has_summary="$(echo "${result}" | jq -e '.startup_summary' >/dev/null 2>&1 && echo 1 || echo 0)"
+  (( has_summary )) || return 0
+
+  agents="$(echo "${result}" | jq -r '.startup_summary.agents[]?' 2>/dev/null)"
+  skills="$(echo "${result}" | jq -r '.startup_summary.skills[]? | (.name + ": " + .path)' 2>/dev/null)"
+
+  echo "Harness context:" >&2
+  echo "  AGENTS.md loaded from:" >&2
+  if [[ -z "${agents}" ]]; then
+    echo "    (none)" >&2
+  else
+    sed 's/^/    /' <<< "${agents}" >&2
+  fi
+  echo "  Skills loaded from:" >&2
+  if [[ -z "${skills}" ]]; then
+    echo "    (none)" >&2
+  else
+    sed 's/^/    /' <<< "${skills}" >&2
+  fi
+}
 
 # --------------------------------------------------------------------------- #
 #  Command discovery                                                           #

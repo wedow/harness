@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# 15-context-summary — describe the prompt and skill files loaded for a session.
+set -euo pipefail
+
+input="$(cat)"
+agents=()
+skill_dirs=()
+
+# Keep this list aligned with the assemble hooks that inject prompt context.
+IFS=':' read -ra sources <<< "${HARNESS_SOURCES:-}"
+for src in "${sources[@]}"; do
+	[[ -z "${src}" ]] && continue
+	[[ "${src}" == "${HARNESS_HOME:-}" ]] && continue
+	case "${src}" in
+		*/.harness) ;;
+		*) [[ -d "${src}/skills" ]] && skill_dirs+=("${src}/skills") ;;
+	esac
+	parent="$(dirname "${src}")"
+	[[ -f "${parent}/AGENTS.md" ]] && agents+=("${parent}/AGENTS.md")
+done
+
+# Match 35-skills: search global roots first and local roots last so the last
+# skill with a given frontmatter name is the one injected into the catalog.
+walk_dirs=()
+cur="${HARNESS_CWD:-${PWD}}"
+while true; do
+	walk_dirs+=("${cur}")
+	[[ "${cur}" == "/" ]] && break
+	cur="$(dirname "${cur}")"
+done
+home_found=0
+for d in "${walk_dirs[@]}"; do
+	[[ "${d}" == "${HOME}" ]] && home_found=1
+done
+(( home_found )) || walk_dirs+=("${HOME}")
+
+for (( i=${#walk_dirs[@]}-1; i>=0; i-- )); do
+	d="${walk_dirs[i]}"
+	[[ -d "${d}/.harness/skills" ]] && skill_dirs+=("${d}/.harness/skills")
+	[[ -d "${d}/.agents/skills" ]] && skill_dirs+=("${d}/.agents/skills")
+done
+
+declare -A skill_paths=()
+for sdir in "${skill_dirs[@]}"; do
+	for skillmd in "${sdir}"/*/SKILL.md; do
+		[[ -f "${skillmd}" ]] || continue
+		frontmatter="$(awk '/^---$/{n++; next} n==1{print} n>=2{exit}' "${skillmd}")"
+		[[ -n "${frontmatter}" ]] || continue
+		name="$(printf '%s\n' "${frontmatter}" | sed -n 's/^name:[[:space:]]*//p' | head -n1)"
+		desc="$(printf '%s\n' "${frontmatter}" | sed -n 's/^description:[[:space:]]*//p' | head -n1)"
+		[[ -n "${name}" && -n "${desc}" ]] || continue
+		skill_paths["${name}"]="$(cd "$(dirname "${skillmd}")" && pwd)/SKILL.md"
+	done
+done
+
+agents_json='[]'
+if (( ${#agents[@]} > 0 )); then
+	agents_json="$(printf '%s\n' "${agents[@]}" | jq -Rsc 'split("\n") | map(select(length > 0)) | unique')"
+fi
+
+skills_json='[]'
+if (( ${#skill_paths[@]} > 0 )); then
+	skill_lines=()
+	for name in "${!skill_paths[@]}"; do
+		skill_lines+=("${name}"$'\t'"${skill_paths[${name}]}")
+	done
+	skills_json="$(printf '%s\n' "${skill_lines[@]}" | sort | jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {name: .[0], path: .[1]})')"
+fi
+
+echo "${input}" | jq --argjson agents "${agents_json}" --argjson skills "${skills_json}" \
+	'. + {startup_summary: {agents: $agents, skills: $skills}}'

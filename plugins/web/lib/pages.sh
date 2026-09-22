@@ -321,7 +321,7 @@ handle_session() { # $1 = id
 handle_events() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1" ui_sig ui_last="" fifo line beat=0 st_last="" ti_last=""
   local msg_cur="" msg_last="" changed removed max_old full f
-  local ssz stream_off=0 force_full=false ev live_buf="" live_last=""
+  local ssz stream_off=0 force_full=false ev delta escaped live_buf="" live_last=""
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
   sse_patch '<div id="hb" hidden></div>' # initial beat so the watchdog arms immediately
@@ -400,7 +400,10 @@ handle_events() { # $1 = id
     if (( ssz > stream_off )); then
       while IFS= read -r ev; do
         case "$(printf '%s' "${ev}" | jq -r '.type // empty' 2>/dev/null)" in
-          thinking) live_buf+="$(printf '%s' "${ev}" | jq -r '.text // empty')" ;;
+          thinking)
+            IFS= read -r -d '' delta < <(printf '%s' "${ev}" | jq -j '.text // empty'; printf '\0')
+            live_buf+="${delta}"
+            ;;
           stop|done) force_full=true; live_buf="" ;;
         esac
       done < <(tail -c +$(( stream_off + 1 )) "${dir}/.stream" 2>/dev/null)
@@ -410,7 +413,8 @@ handle_events() { # $1 = id
     # running; the saved message's collapsed render supersedes it
     if [[ "${live_buf}" != "${live_last}" ]]; then
       if [[ -n "${live_buf}" ]]; then
-        sse_patch "$(printf '<div id="live"><details class="seg think" open><summary>thinking…</summary><pre>%s</pre></details></div>' "$(html_escape "${live_buf}")")" || exit 0
+        IFS= read -r -d '' escaped < <(html_escape "${live_buf}"; printf '\0')
+        sse_patch "$(printf '<div id="live"><details class="seg think" open><summary>thinking…</summary><pre>%s</pre></details></div>' "${escaped}")" || exit 0
       else
         sse_patch '<div id="live"></div>' || exit 0
       fi

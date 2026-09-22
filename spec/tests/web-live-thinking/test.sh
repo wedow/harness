@@ -40,6 +40,15 @@ printf '{"type":"thinking","text":" more"}\n' >> "${dir}/.stream"
 sleep 1.2
 last | grep -q 'pondering deeply more' || { echo "FAIL: live not updated"; kill $hpid 2>/dev/null; exit 1; }
 
+# A newline-only delta must remain visible and trigger its own live patch.
+before="$(n)"
+printf '{"type":"thinking","text":"\\n"}\n' >> "${dir}/.stream"
+sleep 1.2
+[[ "$(n)" -gt "${before}" ]] \
+  || { echo "FAIL: newline-only thinking delta sent no patch"; kill $hpid 2>/dev/null; exit 1; }
+last | awk '/pondering deeply more$/{getline; if ($0 ~ /^<\/pre>/) found=1} END{exit !found}' \
+  || { echo "FAIL: live thinking newline was lost"; kill $hpid 2>/dev/null; exit 1; }
+
 # 3. message lands -> transcript delta AND live cleared
 cat > "${dir}/messages/0002-assistant.md" <<'M'
 ---

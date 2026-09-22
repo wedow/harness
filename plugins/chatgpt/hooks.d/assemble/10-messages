@@ -9,12 +9,13 @@ msg_dir="${HARNESS_SESSION}/messages"
 [[ -d "${msg_dir}" ]] || { echo "${payload}"; exit 0; }
 
 messages="[]"
+assembled_user_seqs=""
 
 add_item() {
   messages="$(printf '%s\n%s' "${messages}" "$1" | jq -s '.[0] + [.[1]]')"
 }
 
-for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
+for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort -V); do
   _role=""
   _call_id=""
   _error="false"
@@ -42,6 +43,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
 
   case "${_role}" in
     user)
+      candidate="${f##*/}"; assembled_user_seqs+="${candidate%%-*}"$'\n'
       add_item "$(printf '%s' "${body}" | jq -Rs '{type: "message", role: "user", content: [{type: "input_text", text: .}]}')"
       ;;
     assistant)
@@ -87,4 +89,4 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
   esac
 done
 
-printf '%s\n%s' "${payload}" "${messages}" | jq -c -s '.[0] + {messages: .[1]}'
+printf '%s\n%s' "${payload}" "${messages}" | jq -c -s --arg seqs "${assembled_user_seqs}" '.[0] + {messages: .[1], _assembled_user_seqs: ($seqs | split("\n") | map(select(length > 0)))}'

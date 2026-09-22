@@ -7,13 +7,9 @@ response="$(cat)"
 msg_dir="${HARNESS_SESSION}/messages"
 mkdir -p "${msg_dir}"
 
-# Determine next sequence number
-last="$(ls -1 "${msg_dir}/" 2>/dev/null | sort -n | tail -1)"
-if [[ -z "${last}" ]]; then
-  seq="0001"
-else
-  seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"
-fi
+# Reserve a sequence shared with web inserts and other message writers.
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+seq="$(_claim_message_seq "${HARNESS_SESSION}")"
 
 # Extract metadata
 model="$(echo "${response}" | jq -r '.model // ""')"
@@ -105,7 +101,7 @@ if [[ "${stop}" == "tool_calls" ]]; then
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
 elif [[ "${stop}" == "length" ]]; then
   # Output-token cap hit mid-turn: continue instead of ending truncated.
-  _length_continue "${msg_dir}" "$(printf '%04d' $(( 10#${seq} + 1 )))"
+  _length_continue "${msg_dir}"
 else
   _length_cont_reset  # turn complete
   printf '%s' "${text_output}" | jq -Rs '{next_state: "done", output: .}'

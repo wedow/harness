@@ -131,6 +131,16 @@ agent_loop() {
       state="error"; context="${result}"; continue
     fi
 
+    # Assemblers report the user files they actually read. A web writer can
+    # reserve a lower sequence and publish it after a higher one was read, so
+    # the follower must check exact files rather than only the highest seq.
+    if [[ "${state}" == assemble ]]; then
+      if echo "${result}" | jq -e '._assembled_user_seqs | type == "array"' >/dev/null 2>&1; then
+        echo "${result}" | jq -r '._assembled_user_seqs[]' > "${session_dir}/.assembled_user_seqs.tmp.$$"
+        mv "${session_dir}/.assembled_user_seqs.tmp.$$" "${session_dir}/.assembled_user_seqs"
+      fi
+    fi
+
     state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
     context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
   done

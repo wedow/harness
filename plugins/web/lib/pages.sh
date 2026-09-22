@@ -3,6 +3,7 @@
 # Requires http.sh sourced; HARNESS_SESSIONS and _new_session (via handler).
 
 _HS="$HARNESS_ROOT/bin/harness"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
 
 # ---------------------------------------------------------------- layout --
 _head() { # $1 = <title>, $2 = current session id (sidebar highlight)
@@ -143,17 +144,12 @@ _driver_alive() { # $1 = session id
 # assemble — i.e. before the next LLM API call — instead of waiting out the
 # whole turn (which can run for hours with subagents).
 _insert_live_message() { # $1 = session dir, $2 = message; rc 1 = insert failed
-  local dir="$1" msg="$2" last seq file tries=0
+  local dir="$1" msg="$2" seq file temp
   mkdir -p "${dir}/messages"
-  # Seq computed like _next_seq, but written with noclobber: the running
-  # driver computes its own seq by listing, so a same-instant write collides.
-  # On collision, recompute and bump (ours retries; the driver never does).
-  while (( tries++ < 5 )); do
-    last="$(ls -1 "${dir}/messages" 2>/dev/null | sort -n | tail -1)"
-    if [[ -z "${last}" ]]; then seq="0001"; else seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"; fi
-    file="${dir}/messages/${seq}-user.md"
-    if ( set -o noclobber
-         cat > "${file}" <<EOF
+  seq="$(_claim_message_seq "${dir}")" || return 1
+  file="${dir}/messages/${seq}-user.md"
+  temp="$(mktemp "${dir}/messages/.write.XXXXXX")" || return 1
+  if ! cat > "${temp}" <<EOF
 ---
 role: user
 seq: ${seq}
@@ -161,12 +157,15 @@ timestamp: $(date -Iseconds)
 ---
 ${msg}
 EOF
-       ) 2>/dev/null; then
-      return 0
-    fi
-    sleep 0.05
-  done
-  return 1
+  then
+    rm -f "${temp}"
+    return 1
+  fi
+  if ! ln "${temp}" "${file}"; then
+    rm -f "${temp}"
+    return 1
+  fi
+  rm -f "${temp}"
 }
 
 # Live subagent count: child sessions with no exit marker AND a live process
@@ -476,11 +475,11 @@ handle_send() { # $1 = session id, message from form body
       handle_500 "could not insert message (seq collision); try again"
       return
     fi
-    # The driver can die between the check and the insert (its stragglers
-    # hold the lock fd, but no one remains to read messages). Launch a
-    # messageless driver — it resumes the existing history and picks up the
-    # just-inserted message instead of orphaning it.
-    _driver_alive "$1" || _launch_agent "$1" ""
+    # The current driver may finish without another assemble (for example,
+    # while its final provider response is in flight). Queue a follower under
+    # the run lock. It checks the assembled-user marker after the first driver
+    # exits and skips the API call if the message was already included.
+    _launch_agent "$1" "" pending
   else
     _launch_agent "$1" "${msg}"
   fi
@@ -510,13 +509,33 @@ _form_field() {
 }
 
 # serialize agent runs per session (one in-flight turn at a time)
-_launch_agent() { # $1 = session id, $2 = message (empty = resume history)
+_web_unassembled_user() { # $1 = session dir
+  local dir="$1" file name seq
+  local -A assembled=()
+  if [[ -f "${dir}/.assembled_user_seqs" ]]; then
+    while IFS= read -r seq; do
+      [[ "${seq}" =~ ^[0-9]+$ ]] && assembled["${seq}"]=1
+    done < "${dir}/.assembled_user_seqs"
+  fi
+  for file in "${dir}/messages/"*-user.md; do
+    [[ -f "${file}" ]] || continue
+    name="${file##*/}"; seq="${name%%-*}"
+    [[ "${seq}" =~ ^[0-9]+$ ]] || continue
+    [[ -n "${assembled[${seq}]+x}" ]] || return 0
+  done
+  return 1
+}
+
+_launch_agent() { # $1 = session id, $2 = message (empty = resume), $3 = pending-only
   local id=$1 dir="${HARNESS_SESSIONS}/$1"
   (
     # Blocking acquire: a message sent mid-turn queues behind the in-flight
     # run. flock -n would fail silently here and run a second concurrent
     # driver on the same session (duplicate subagents, racing writes).
     flock 9
+    if [[ "${3:-}" == pending ]] && ! _web_unassembled_user "${dir}"; then
+      exit 0
+    fi
     if [[ -n "$2" ]]; then
       "${_HS}" agent "${id}" "$2" >>"${dir}/serve.log" 2>&1
     else
@@ -692,12 +711,14 @@ _msgrender() { # $@ = message files -> rendered divs (no #transcript wrapper)
 
 _transcript() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1"
+  local -a files
   ls "${dir}/messages"/*.md >/dev/null 2>&1 || {
     printf '<div id="transcript"><p class="meta">(no messages yet)</p></div>'
     return
   }
   printf '<div id="transcript">'
-  _msgrender "${dir}"/messages/*.md
+  mapfile -t files < <(printf '%s\n' "${dir}"/messages/*.md | sort -V)
+  _msgrender "${files[@]}"
   printf '</div>\n'
 }
 

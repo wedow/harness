@@ -14,6 +14,7 @@ msg_dir="${HARNESS_SESSION}/messages"
 # 900-message session.
 messages_jsonl=""
 tool_results_jsonl=""
+assembled_user_seqs=""
 
 flush_tool_results() {
   if [[ -n "${tool_results_jsonl}" ]]; then
@@ -22,7 +23,7 @@ flush_tool_results() {
   fi
 }
 
-for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
+for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort -V); do
   _role=""
   _call_id=""
   _error="false"
@@ -50,6 +51,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
 
   case "${_role}" in
     user)
+      candidate="${f##*/}"; assembled_user_seqs+="${candidate%%-*}"$'\n'
       flush_tool_results
       messages_jsonl+="$(printf '%s' "${body}" | jq -c -Rs '{role: "user", content: .}')"$'\n'
       ;;
@@ -142,11 +144,11 @@ flush_tool_results
 # mid-turn (live steering from the web UI) can land right after tool results,
 # producing two consecutive user turns — merge consecutive user messages
 # into one (string content becomes a text block; arrays concatenate).
-printf '%s\n%s\n' "${payload}" "${messages_jsonl}" | jq -c -s '
+printf '%s\n%s\n' "${payload}" "${messages_jsonl}" | jq -c -s --arg seqs "${assembled_user_seqs}" '
   (.[1:] | reduce .[] as $m ([];
     if ($m.role == "user") and (length > 0) and (.[-1].role == "user")
     then .[-1] = (.[-1] + {content: (
         ([.[-1].content | if type == "string" then [{type: "text", text: .}] else . end]
          + [$m.content   | if type == "string" then [{type: "text", text: .}] else . end]) | add)})
     else . + [$m] end)) as $msgs
-  | .[0] + {messages: $msgs}'
+  | .[0] + {messages: $msgs, _assembled_user_seqs: ($seqs | split("\n") | map(select(length > 0)))}'

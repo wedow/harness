@@ -21,14 +21,42 @@ EOF
 
 _next_seq() {
   local dir="$1"
-  local last; last="$(ls -1 "${dir}/messages/" 2>/dev/null | sort -n | tail -1)"
-  if [[ -z "${last}" ]]; then echo "0001"
-  else printf '%04d' $(( 10#${last%%-*} + 1 )); fi
+  local file name seq latest=0
+  for file in "${dir}/messages/"*-*.md "${dir}/.seq/"*; do
+    [[ -e "${file}" ]] || continue
+    name="${file##*/}"; seq="${name%%-*}"
+    [[ "${seq}" =~ ^[0-9]+$ ]] || continue
+    (( 10#${seq} > latest )) && latest=$(( 10#${seq} ))
+  done
+  printf '%04d\n' $(( latest + 1 ))
+}
+
+# Reserve a sequence across writers with different role suffixes. A persistent
+# marker prevents another writer from reusing a number if its owner dies before
+# finishing the message file. The file itself is checked for older sessions
+# whose messages predate reservations.
+_claim_message_seq() {
+  local dir="$1" seq n tries=0
+  mkdir -p "${dir}/.seq"
+  seq="$(_next_seq "${dir}")"; n=$(( 10#${seq} ))
+  while (( tries++ < 1000 )); do
+    seq="$(printf '%04d' "${n}")"
+    if mkdir "${dir}/.seq/${seq}" 2>/dev/null; then
+      if compgen -G "${dir}/messages/${seq}-*.md" >/dev/null; then
+        rmdir "${dir}/.seq/${seq}"
+      else
+        printf '%s\n' "${seq}"
+        return 0
+      fi
+    fi
+    n=$(( n + 1 ))
+  done
+  return 1
 }
 
 _save_message() {
   local dir="$1" content="$2"
-  local seq; seq="$(_next_seq "${dir}")"
+  local seq; seq="$(_claim_message_seq "${dir}")" || return 1
   cat > "${dir}/messages/${seq}-user.md" <<EOF
 ---
 role: user

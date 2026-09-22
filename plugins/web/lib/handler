@@ -76,6 +76,7 @@ case "${METHOD}" in
   POST)
     if [[ "${RPATH}" == "/new" ]]; then handle_new
     elif [[ "${RPATH}" =~ ^/s/([^/]+)/stop$ ]]; then handle_stop "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/retry$ ]]; then handle_retry "${BASH_REMATCH[1]}"
     elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_send "${BASH_REMATCH[1]}"
     else handle_404; fi ;;
   *) handle_404 ;;

@@ -31,6 +31,7 @@ button{padding:.5rem 1rem}
 #stop-btn button{background:#c22;color:#fff;border:none}
 #stop-btn[hidden]{display:none} /* form{display:flex} would override [hidden] */
 #run-error:not(:empty){background:#fff0ee;border:1px solid #d66;border-radius:4px;padding:.5rem .75rem;white-space:pre-wrap}
+#run-error form{display:inline;padding:0;margin-left:.75rem}
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
 #sidebar{position:fixed;top:0;bottom:0;left:0;width:230px;background:#f6f6f6;border-right:1px solid #ddd;padding:1rem;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:20}
@@ -433,7 +434,11 @@ handle_events() { # $1 = id
       stream_prefix_sig="$(head -c "${stream_prefix_len}" "${dir}/.stream" 2>/dev/null | cksum)"
     fi
     if [[ "${error_text}" != "${error_last}" ]]; then
-      sse_patch "<div id=\"run-error\" role=\"alert\">$(html_escape "${error_text}")</div>" || exit 0
+      if [[ -n "${error_text}" ]]; then
+        sse_patch "<div id=\"run-error\" role=\"alert\">$(html_escape "${error_text}")<form method=\"post\" action=\"/s/$(html_escape "$1")/retry\"><button>Retry</button></form></div>" || exit 0
+      else
+        sse_patch '<div id="run-error" role="alert"></div>' || exit 0
+      fi
       error_last="${error_text}"
     fi
     # live thinking stream: show deltas as an open block while the turn is
@@ -517,6 +522,13 @@ handle_send() { # $1 = session id, message from form body
 handle_stop() { # $1 = session id — web equivalent of Ctrl-C on the driver
   [[ -d "${HARNESS_SESSIONS}/$1" ]] || { handle_404; return; }
   _stop_agent "$1"
+  STATUS=303
+  HEADERS+=("Location: /s/$1")
+}
+
+handle_retry() { # $1 = session id — resume a failed turn without a new user message
+  [[ -d "${HARNESS_SESSIONS}/$1" ]] || { handle_404; return; }
+  _driver_alive "$1" || _launch_agent "$1" ""
   STATUS=303
   HEADERS+=("Location: /s/$1")
 }

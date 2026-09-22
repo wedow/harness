@@ -404,6 +404,7 @@ handle_events() { # $1 = id
             IFS= read -r -d '' delta < <(printf '%s' "${ev}" | jq -j '.text // empty'; printf '\0')
             live_buf+="${delta}"
             ;;
+          tool_start) live_buf="" ;;
           stop|done) force_full=true; live_buf="" ;;
         esac
       done < <(tail -c +$(( stream_off + 1 )) "${dir}/.stream" 2>/dev/null)

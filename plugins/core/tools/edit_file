@@ -103,7 +103,11 @@ JSON
       _pa_line="${BASH_REMATCH[1]}"; _pa_hash="${BASH_REMATCH[2]}"
     }
 
-    tmpdir="$(mktemp -d)"; trap 'rm -rf "${tmpdir}"' EXIT
+    # Keep the work copy on the destination filesystem so the final move is
+    # a rename. A cross-filesystem mv falls back to copy-and-remove, which can
+    # leave a partially written destination if interrupted.
+    tmpdir="$(mktemp -d "$(dirname "${path}")/.edit_file.XXXXXXXX")"
+    trap 'rm -rf "${tmpdir}"' EXIT
     ev_kind=(); ev_start=(); ev_end=(); ev_n=(); ev_idx=()
     anchor_pairs=()
 

@@ -102,3 +102,36 @@ echo "$out" | grep -q "tag is required" || { echo "FAIL: wrong missing-tag messa
 assert_eq "missing tag: intervening change preserved" "$(cat "${f}")" "$before"
 "${tool}" --schema | jq -e '.input_schema.required | index("tag")' >/dev/null \
   || { echo "FAIL: schema should require tag"; exit 1; }
+
+# 9. A failed final move must leave the destination intact. Force work files
+# onto another filesystem, then simulate a cross-device copy interrupted after
+# truncating the destination (the fallback used by mv across filesystems).
+if [[ -d /dev/shm && -w /dev/shm && "$(stat -c %d /dev/shm)" != "$(stat -c %d "${_tmpdir}")" ]]; then
+  printf 'original\n' > "${f}"
+  before="$(cat "${f}")"
+  a1="$(hl "${f}" | sed -n '1p' | cut -d: -f1)"
+  mkdir -p "${_tmpdir}/fake-bin"
+  real_mv="$(command -v mv)"
+  cat > "${_tmpdir}/fake-bin/mv" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$2" == "${EDIT_TEST_TARGET}" ]]; then
+  stat -c %d "$1" > "${EDIT_TEST_SOURCE_DEVICE}"
+  if [[ "$(stat -c %d "$1")" != "$(stat -c %d "$2")" ]]; then
+    printf 'partial copy\n' > "$2"
+  fi
+  exit 1
+fi
+exec "${EDIT_TEST_REAL_MV}" "$@"
+SH
+  chmod +x "${_tmpdir}/fake-bin/mv"
+  out="$(jq -c -n --arg t "$(tag "$f")" --arg a1 "$a1" \
+    '{path:"safe.txt",tag:$t,edits:[{at:$a1,content:["replacement"]}]}' | \
+    env PATH="${_tmpdir}/fake-bin:${PATH}" TMPDIR=/dev/shm \
+      EDIT_TEST_TARGET="${f}" EDIT_TEST_SOURCE_DEVICE="${_tmpdir}/source-device" \
+      EDIT_TEST_REAL_MV="${real_mv}" "${tool}" --exec 2>&1)" && {
+    echo "FAIL: injected final move failure should error"; exit 1
+  }
+  assert_eq "failed move: file untouched" "$(cat "${f}")" "${before}"
+  assert_eq "work is on destination filesystem" "$(cat "${_tmpdir}/source-device")" "$(stat -c %d "${f}")"
+fi

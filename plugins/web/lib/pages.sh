@@ -305,8 +305,10 @@ EOF
 handle_session() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1"
   [[ -d "${dir}" ]] || { handle_404; return; }
-  local meta
-  meta="$(grep -hE '^(model|provider)=' "${dir}/session.conf" 2>/dev/null | tr '\n' ' ')"
+  local meta=""
+  if [[ -f "${dir}/session.conf" ]]; then
+    meta="$(grep -hE '^(model|provider)=' "${dir}/session.conf" | tr '\n' ' ' || true)"
+  fi
   HEADERS+=("Content-Type: text/html; charset=utf-8")
   BODY="$(_session_page "$1" "${meta}")"
 }

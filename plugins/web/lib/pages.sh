@@ -339,7 +339,7 @@ handle_events() { # $1 = id
     # --- transcript deltas: per-message-file change detection ---
     # Existing messages morph by id; new messages append inside #transcript.
     # .stream churn does not trigger renders.
-    msg_cur="$(stat -c '%n %Y %s' "${dir}"/messages/*.md 2>/dev/null | sort)"
+    msg_cur="$(stat -c '%n %y %s' "${dir}"/messages/*.md 2>/dev/null | sort)"
     if [[ "${msg_cur}" != "${msg_last}" ]]; then
       if [[ -z "${msg_last}" ]]; then
         sse_patch "$(_transcript "$1")" || exit 0

@@ -31,6 +31,7 @@ JSON
 
   --exec)
     [[ -f "${conf}" ]] || { echo "error: no session"; exit 1; }
+    grep -q '^title_locked=.' "${conf}" && { echo "error: title locked"; exit 1; }
     t="$(cat | jq -r '.title // empty')"
     [[ -n "${t}" ]] || { echo "error: empty title"; exit 1; }
     tmp="$(mktemp)"

@@ -30,6 +30,7 @@ button{padding:.5rem 1rem}
 #stop-btn{padding:0 0 .25rem}
 #stop-btn button{background:#c22;color:#fff;border:none}
 #stop-btn[hidden]{display:none} /* form{display:flex} would override [hidden] */
+#run-error:not(:empty){background:#fff0ee;border:1px solid #d66;border-radius:4px;padding:.5rem .75rem;white-space:pre-wrap}
 #scrollbtn{position:fixed;bottom:5.5rem;right:1.5rem;border:none;border-radius:50%;width:2.5rem;height:2.5rem;font-size:1.2rem;cursor:pointer;box-shadow:0 1px 4px rgba(0,0,0,.25)}
 #scrollbtn[hidden]{display:none}
 #sidebar{position:fixed;top:0;bottom:0;left:0;width:230px;background:#f6f6f6;border-right:1px solid #ddd;padding:1rem;overflow-y:auto;transform:translateX(-100%);transition:transform .2s;z-index:20}
@@ -320,7 +321,8 @@ handle_session() { # $1 = id
 handle_events() { # $1 = id
   local dir="${HARNESS_SESSIONS}/$1" ui_sig ui_last="" fifo line beat=0 st_last="" ti_last=""
   local msg_cur="" msg_last="" changed removed max_old full f
-  local ssz stream_off=0 force_full=false ev delta escaped live_buf="" live_last=""
+  local ssz stream_off=0 stream_partial="" stream_prefix_len=0 stream_prefix_sig="" stream_replaced
+  local force_full=false ev delta escaped live_buf="" live_last="" error_text="" error_last=""
   [[ -d "${dir}" ]] || { handle_404; return; }
   respond_sse
   sse_patch '<div id="hb" hidden></div>' # initial beat so the watchdog arms immediately
@@ -379,8 +381,11 @@ handle_events() { # $1 = id
           fi
         fi
       fi
-      # the message's own render supersedes any live streaming block
-      [[ -n "${live_buf}" ]] && live_buf=""
+      # A saved assistant message supersedes its live thinking. A mid-turn
+      # user message or tool result does not end the assistant's stream.
+      while IFS= read -r f; do
+        [[ "${f}" == *-assistant.md ]] && { live_buf=""; break; }
+      done <<< "${changed}"
       # Message changes move the conversation — re-assert status in the same
       # moment instead of waiting for the next beat.
       st_last="$(_status_fragment "$1")"
@@ -392,11 +397,21 @@ handle_events() { # $1 = id
     # path trusts stat comparison and morph merging; a periodic full
     # transcript re-asserts the DOM against any drift.
     ssz="$(stat -c %s "${dir}/.stream" 2>/dev/null || echo 0)"
-    if (( ssz < stream_off )); then          # truncated: a new turn began
+    stream_replaced=false
+    # A new turn can truncate and regrow beyond the old offset between polls.
+    # Compare bytes already consumed, which an ordinary append cannot change.
+    if (( stream_prefix_len > 0 && ssz >= stream_prefix_len )); then
+      [[ "$(head -c "${stream_prefix_len}" "${dir}/.stream" 2>/dev/null | cksum)" == "${stream_prefix_sig}" ]] || stream_replaced=true
+    fi
+    if (( ssz < stream_off )) || [[ "${stream_replaced}" == true ]]; then
       stream_off=0
+      stream_partial=""
+      stream_prefix_len=0 stream_prefix_sig=""
       live_buf="" live_last=""
+      error_text=""
     fi
     if (( ssz > stream_off )); then
+      ev=""
       while IFS= read -r ev; do
         case "$(printf '%s' "${ev}" | jq -r '.type // empty' 2>/dev/null)" in
           thinking)
@@ -405,9 +420,19 @@ handle_events() { # $1 = id
             ;;
           tool_start) live_buf="" ;;
           stop|done) force_full=true; live_buf="" ;;
+          error)
+            IFS= read -r -d '' error_text < <(printf '%s' "${ev}" | jq -j 'if (.message | type) == "string" and (.message | length) > 0 then .message else "Agent run failed" end'; printf '\0')
+            ;;
         esac
-      done < <(tail -c +$(( stream_off + 1 )) "${dir}/.stream" 2>/dev/null)
+      done < <(printf '%s' "${stream_partial}"; tail -c +$(( stream_off + 1 )) "${dir}/.stream" 2>/dev/null)
+      stream_partial="${ev}"
       stream_off="${ssz}"
+      stream_prefix_len=$(( stream_off < 256 ? stream_off : 256 ))
+      stream_prefix_sig="$(head -c "${stream_prefix_len}" "${dir}/.stream" 2>/dev/null | cksum)"
+    fi
+    if [[ "${error_text}" != "${error_last}" ]]; then
+      sse_patch "<div id=\"run-error\" role=\"alert\">$(html_escape "${error_text}")</div>" || exit 0
+      error_last="${error_text}"
     fi
     # live thinking stream: show deltas as an open block while the turn is
     # running; the saved message's collapsed render supersedes it
@@ -559,6 +584,7 @@ _session_page() { # $1 = id, $2 = meta line
 <p class="meta">$(html_escape "${id}") $(html_escape "$2") <a href="/">← all sessions</a></p>
 $(_agent_status_html "${id}")
 <div id="hb" hidden></div>
+<div id="run-error" role="alert"></div>
 <div id="view" data-init="@get('/s/$(html_escape "${id}")/events', {retry: 'always', retryMaxCount: 99999, openWhenHidden: true})">
 <div id="scroll">
 $(_transcript "$1")

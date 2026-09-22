@@ -14,6 +14,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - name: Install dependencies
-        run: pacman -Syu --noconfirm bash jq curl git perl python
+        run: pacman -Syu --noconfirm bash jq curl git perl python nodejs
       - name: Run tests
         run: spec/run

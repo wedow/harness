@@ -564,28 +564,28 @@ $(_stop_btn "$(html_escape "${id}")")
   btn.addEventListener('click', () => { scroll.scrollTop = scroll.scrollHeight; });
   scroll.scrollTop = scroll.scrollHeight;
 })();
-// <details> open state survives morphs. Toggling sets the open ATTRIBUTE,
-// and a morph syncs attributes from server HTML — which never carries it —
-// so patches would collapse everything the user expanded. Record user
-// toggles by element id and re-apply after patches strip them.
+// <details> open state survives morphs. Record user toggles by element id and
+// re-apply them when a patch syncs the server's default open attribute.
 (() => {
   const t = document.getElementById('transcript');
   if (!t) return;
-  const open = new Set();
+  const toggled = new Map();
   t.addEventListener('click', e => {
     const sum = e.target.closest('summary');
     const d = sum && sum.parentElement;
     if (!d || !d.id) return;
     // activation (attribute toggle) happens after dispatch; read after
-    queueMicrotask(() => { d.open ? open.add(d.id) : open.delete(d.id); });
+    queueMicrotask(() => { toggled.set(d.id, d.open); });
   }, true);
   new MutationObserver(muts => {
     for (const m of muts) {
       const el = m.target;
-      if (el.open || !el.id || !open.has(el.id)) continue;
-      // after the user's own close finishes (microtask above runs first),
-      // the id is gone from the set and this restore becomes a no-op
-      setTimeout(() => { if (open.has(el.id) && !el.open) el.open = true; }, 0);
+      if (!el.id || !toggled.has(el.id)) continue;
+      // The user's own toggle updates the map before this timer runs.
+      setTimeout(() => {
+        if (toggled.has(el.id) && el.open !== toggled.get(el.id))
+          el.open = toggled.get(el.id);
+      }, 0);
     }
   }).observe(t, {subtree: true, attributes: true, attributeFilter: ['open']});
 })();

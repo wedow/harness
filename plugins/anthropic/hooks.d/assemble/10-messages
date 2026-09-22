@@ -78,7 +78,26 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
       }
 
       while IFS= read -r line; do
-        if [[ "${line}" =~ ^(\`+)thinking\ signature=(.+) ]]; then
+        if ${in_thinking_block}; then
+          if [[ "${line}" == "${think_fence}" ]]; then
+            in_thinking_block=false
+            thinking_text="${thinking_text%$'\n'}"
+            content_blocks_jsonl+="$(printf '%s' "${thinking_text}" | jq -c -Rs --arg sig "${thinking_sig}" '{type: "thinking", thinking: ., signature: $sig}')"$'\n'
+          else
+            thinking_text+="${line}"$'\n'
+          fi
+          continue
+        fi
+        if ${in_tool_block}; then
+          if [[ "${line}" == "${call_fence}" ]]; then
+            in_tool_block=false
+            content_blocks_jsonl+="$(printf '%s' "${tool_body}" | jq -c --arg id "${tool_id}" --arg name "${tool_name}" '{type: "tool_use", id: $id, name: $name, input: .}')"$'\n'
+          else
+            tool_body+="${line}"
+          fi
+          continue
+        fi
+        if [[ "${line}" =~ ^(\`{3,})thinking\ signature=(.+)$ ]]; then
           _flush_text
           in_thinking_block=true
           think_fence="${BASH_REMATCH[1]}"
@@ -86,13 +105,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
           thinking_text=""
           continue
         fi
-        if ${in_thinking_block} && [[ "${line}" == "${think_fence}" ]]; then
-          in_thinking_block=false
-          thinking_text="${thinking_text%$'\n'}"
-          content_blocks_jsonl+="$(printf '%s' "${thinking_text}" | jq -c -Rs --arg sig "${thinking_sig}" '{type: "thinking", thinking: ., signature: $sig}')"$'\n'
-          continue
-        fi
-        if [[ ( "${_stop}" == "tool_calls" || -z "${_stop}" ) && "${line}" =~ ^(\`+)tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
+        if [[ ( "${_stop}" == "tool_calls" || -z "${_stop}" ) && "${line}" =~ ^(\`{3,})tool_call\ id=([^ ]+)\ name=([^ ]+)$ ]]; then
           _flush_text
           in_tool_block=true
           call_fence="${BASH_REMATCH[1]}"
@@ -101,18 +114,7 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
           tool_body=""
           continue
         fi
-        if ${in_tool_block} && [[ "${line}" == "${call_fence}" ]]; then
-          in_tool_block=false
-          content_blocks_jsonl+="$(printf '%s' "${tool_body}" | jq -c --arg id "${tool_id}" --arg name "${tool_name}" '{type: "tool_use", id: $id, name: $name, input: .}')"$'\n'
-          continue
-        fi
-        if ${in_thinking_block}; then
-          thinking_text+="${line}"$'\n'
-        elif ${in_tool_block}; then
-          tool_body+="${line}"
-        else
-          current_text+="${line}"$'\n'
-        fi
+        current_text+="${line}"$'\n'
       done <<< "${body}"
 
       _flush_text

@@ -9,6 +9,8 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
+- `dispatch-sse-replay` spec: end-to-end send/dispatch regression harness driving the real anthropic provider against a replayed SSE turn (8KB fifo args, atomic artifact publish checks).
+
 - Standard optional tool input key `intent`: a short human-readable phrase for what a call is trying to accomplish. Ignored by execution; persisted as `intent:` frontmatter on tool_result messages and rendered as the collapsed summary by the web transcript.
 - Tool result readability: flat JSON results (e.g. the bash envelope) are persisted as YAML with block scalars for multi-line values instead of `\n`-escaped strings (`plugins/core/lib/render-result`); the REPL/stream display uses the same rendering.
 - Web transcript collapses tool_result messages into `<details>` blocks labeled by `intent` (falling back to the tool name); failed calls stay expanded.
@@ -17,6 +19,8 @@ and this project adheres to Semantic Versioning.
 - Session titles on the home page list (same title-or-id logic as the sidebar).
 
 ### Changed
+
+- edit_file promoted from repo-local incubation to the core tool: two edit shapes (`at`/`end` replace, `after` insert), tag-verified staleness, all-anchors-validated atomic writes, fresh anchors returned per changed region. read_file emits the `tag=` snapshot header it checks against.
 
 - Transcript updates are per-message deltas (stable `m<seq>` ids on every message div) — a new message costs its own bytes, `.stream` churn renders nothing; `stop`/`done` stream events force a full re-sync as the drift safety net, as do mid-inserted or removed files.
 - Thinking streams live: `thinking` deltas from the session stream render as an open block in a `#live` region during the turn; the saved message's collapsed render supersedes it.

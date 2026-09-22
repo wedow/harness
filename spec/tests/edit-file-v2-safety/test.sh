@@ -5,7 +5,7 @@ set -euo pipefail
 source "${SPEC_DIR}/helpers.sh"
 setup
 
-tool="${HARNESS_ROOT}/.harness/tools/edit_file"
+tool="${HARNESS_ROOT}/plugins/core/tools/edit_file"
 [[ -x "${tool}" ]] || { echo "FAIL: ${tool} missing or not executable"; exit 1; }
 export HARNESS_CWD="${_tmpdir}"
 hl() { awk -f "${HARNESS_ROOT}/plugins/core/lib/hashline.awk" "$1"; }

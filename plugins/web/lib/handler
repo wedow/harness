@@ -33,6 +33,17 @@ while IFS= read -r -t 10 h; do
 done
 if [[ "${METHOD}" == "POST" ]]; then
   clen="${HTTP_HEADERS[content-length]:-0}"
+  # Bash recursively evaluates variable values in arithmetic contexts. A
+  # header such as BODY[$(command)] must never reach an arithmetic expression.
+  if [[ ! "${clen}" =~ ^[0-9]+$ ]]; then
+    STATUS=400; HEADERS=("Content-Type: text/plain"); BODY="invalid Content-Length"
+    respond_request; exit 0
+  fi
+  if [[ "${#clen}" -gt 7 ]] || (( 10#$clen > 1048576 )); then
+    STATUS=413; HEADERS=("Content-Type: text/plain"); BODY="request body too large"
+    respond_request; exit 0
+  fi
+  clen=$((10#$clen))
   (( clen > 0 )) && IFS= read -r -N "${clen}" -t 30 BODY || true
 fi
 

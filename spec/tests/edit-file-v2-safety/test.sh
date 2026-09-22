@@ -158,3 +158,27 @@ out="$(jq -c -n --arg t "$(tag "$f")" --arg a1 "$a1" \
 }
 echo "${out}" | grep -q "changed since read" || { echo "FAIL: wrong late-write message: ${out}"; exit 1; }
 assert_eq "late concurrent write preserved" "$(cat "${f}")" "concurrent change"
+
+# 11. Editing through a symlink changes its target and preserves the link.
+mkdir -p "${_tmpdir}/target-dir"
+target="${_tmpdir}/target-dir/target.txt"
+link="${_tmpdir}/alias.txt"
+printf 'before\n' > "${target}"
+ln -s 'target-dir/target.txt' "${link}"
+a1="$(hl "${link}" | sed -n '1p' | cut -d: -f1)"
+out="$(jq -c -n --arg t "$(tag "$link")" --arg a1 "$a1" \
+  '{path:"alias.txt",tag:$t,edits:[{at:$a1,content:["after"]}]}' | "${tool}" --exec)" || {
+  echo "FAIL: edit through symlink errored: ${out}"; exit 1
+}
+[[ -L "${link}" ]] || { echo "FAIL: edit replaced symlink with a regular file"; exit 1; }
+assert_eq "symlink destination preserved" "$(readlink "${link}")" "target-dir/target.txt"
+assert_eq "symlink target changed" "$(cat "${target}")" "after"
+
+# A dangling symlink has no editable target and must remain untouched.
+dangling="${_tmpdir}/dangling.txt"
+ln -s 'target-dir/missing.txt' "${dangling}"
+out="$(jq -c -n '{path:"dangling.txt",tag:"deadbeef",edits:[{after:"0",content:["new"]}]}' | "${tool}" --exec 2>&1)" && {
+  echo "FAIL: dangling symlink should error"; exit 1
+}
+echo "${out}" | grep -q 'file not found' || { echo "FAIL: wrong dangling-link error: ${out}"; exit 1; }
+[[ -L "${dangling}" ]] || { echo "FAIL: dangling symlink was removed"; exit 1; }

@@ -79,6 +79,8 @@ JSON
     [[ -n "${tag_in}" ]] || { echo "error: tag is required — read_file first"; exit 1; }
     [[ "${path}" != /* ]] && path="${HARNESS_CWD:-${PWD}}/${path}"
     [[ -f "${path}" ]] || { echo "error: file not found: ${path}"; exit 1; }
+    # Rename the resolved target, not a symlink used to reach it.
+    path="$(readlink -f -- "${path}")"
 
     num_edits="$(echo "${edits_json}" | jq 'length')"
     (( num_edits > 0 )) || { echo "error: no edits provided"; exit 1; }

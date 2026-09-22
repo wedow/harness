@@ -29,7 +29,6 @@ header="${header%%'<div id="view"'*}"
 
 plain='untitled-session'
 mkdir -p "${HARNESS_SESSIONS}/${plain}/messages"
-printf 'provider=mock\n' > "${HARNESS_SESSIONS}/${plain}/session.conf"
 HEADERS=()
 handle_session "${plain}"
 [[ "${BODY}" == *"<title>${plain}</title>"* ]] || {

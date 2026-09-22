@@ -597,8 +597,10 @@ _agent_status_html() { # $1 = id — static #agent-status element (morph target)
 }
 
 _session_page() { # $1 = id, $2 = meta line
-  local id=$1 title
-  title="$(sed -n 's/^title=//p' "${HARNESS_SESSIONS}/${id}/session.conf" 2>/dev/null | head -1)"
+  local id=$1 title=""
+  if [[ -f "${HARNESS_SESSIONS}/${id}/session.conf" ]]; then
+    title="$(sed -n 's/^title=//p' "${HARNESS_SESSIONS}/${id}/session.conf" | head -1)"
+  fi
   [[ -n "${title}" ]] || title="${id}"
   _head "${title}" "${id}" <<EOF
 <h1>$(html_escape "${title}")</h1>

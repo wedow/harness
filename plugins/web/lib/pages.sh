@@ -184,11 +184,13 @@ _subagent_count() { # $1 = session dir
 # Status line while a turn is in flight, e.g. "agent working… · 2 subagents ·
 # 1 queued". Prints nothing and returns 1 when idle.
 _agent_status_line() { # $1 = session id
-  local dir="${HARNESS_SESSIONS}/$1" sub out
+  local dir="${HARNESS_SESSIONS}/$1" sub queued out
   _driver_alive "$1" || return 1
   sub="$(_subagent_count "${dir}")"
+  queued="$(_web_queued_count "${dir}")"
   out="&#10227; agent working…"
   if (( sub > 0 )); then out+=" · ${sub} subagent"; (( sub > 1 )) && out+="s"; fi
+  if (( queued > 0 )); then out+=" · ${queued} queued, waiting for current turn"; fi
   printf '%s' "${out}"
 }
 # Kill the current turn: every process holding the session run-lock fd IS the
@@ -534,8 +536,8 @@ _form_field() {
 }
 
 # serialize agent runs per session (one in-flight turn at a time)
-_web_unassembled_user() { # $1 = session dir
-  local dir="$1" file name seq
+_web_queued_count() { # $1 = session dir
+  local dir="$1" file name seq count=0
   local -A assembled=()
   if [[ -f "${dir}/.assembled_user_seqs" ]]; then
     while IFS= read -r seq; do
@@ -546,9 +548,13 @@ _web_unassembled_user() { # $1 = session dir
     [[ -f "${file}" ]] || continue
     name="${file##*/}"; seq="${name%%-*}"
     [[ "${seq}" =~ ^[0-9]+$ ]] || continue
-    [[ -n "${assembled[${seq}]+x}" ]] || return 0
+    [[ -n "${assembled[${seq}]+x}" ]] || count=$(( count + 1 ))
   done
-  return 1
+  printf '%s\n' "${count}"
+}
+
+_web_unassembled_user() { # $1 = session dir
+  (( $(_web_queued_count "$1") > 0 ))
 }
 
 _launch_agent() { # $1 = session id, $2 = message (empty = resume), $3 = pending-only

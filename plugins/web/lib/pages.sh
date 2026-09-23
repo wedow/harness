@@ -642,17 +642,20 @@ $(_stop_btn "$(html_escape "${id}")")
   const t = document.getElementById('transcript');
   if (!t) return;
   const toggled = new Map();
+  const pending = new Set();
   t.addEventListener('click', e => {
     const sum = e.target.closest('summary');
     const d = sum && sum.parentElement;
     if (!d || !d.id) return;
-    // activation (attribute toggle) happens after dispatch; read after
-    queueMicrotask(() => { toggled.set(d.id, d.open); });
+    // Browsers may run microtasks before summary's default activation. Read
+    // the resulting state in a task, and ignore the click's own mutation.
+    pending.add(d.id);
+    setTimeout(() => { toggled.set(d.id, d.open); pending.delete(d.id); }, 0);
   }, true);
   new MutationObserver(muts => {
     for (const m of muts) {
       const el = m.target;
-      if (!el.id || !toggled.has(el.id)) continue;
+      if (!el.id || pending.has(el.id) || !toggled.has(el.id)) continue;
       // The user's own toggle updates the map before this timer runs.
       setTimeout(() => {
         if (toggled.has(el.id) && el.open !== toggled.get(el.id))

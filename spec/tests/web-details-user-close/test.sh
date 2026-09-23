@@ -46,8 +46,11 @@ if (!click || !onMutation) throw new Error('details handlers were not installed'
 (async () => {
   const detail = { id: 'm0001', open: true };
   click({ target: { closest() { return { parentElement: detail }; } } });
+  await Promise.resolve(); // a microtask checkpoint can precede default activation
   detail.open = false; // browser's default summary activation
-  await Promise.resolve();
+  onMutation([{ target: detail }]); // native open-attribute change
+  await new Promise(resolve => setTimeout(resolve, 5));
+  if (detail.open) throw new Error('click to close was immediately undone');
   detail.open = true; // server reasserts error: true during morph
   onMutation([{ target: detail }]);
   await new Promise(resolve => setTimeout(resolve, 5));
@@ -55,8 +58,11 @@ if (!click || !onMutation) throw new Error('details handlers were not installed'
 
   const collapsed = { id: 'm0002', open: false };
   click({ target: { closest() { return { parentElement: collapsed }; } } });
-  collapsed.open = true;
   await Promise.resolve();
+  collapsed.open = true;
+  onMutation([{ target: collapsed }]);
+  await new Promise(resolve => setTimeout(resolve, 5));
+  if (!collapsed.open) throw new Error('click to expand was immediately undone');
   collapsed.open = false;
   onMutation([{ target: collapsed }]);
   await new Promise(resolve => setTimeout(resolve, 5));

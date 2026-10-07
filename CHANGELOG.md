@@ -9,40 +9,46 @@ and this project adheres to Semantic Versioning.
 
 ### Added
 
-- `dispatch-sse-replay` spec: end-to-end send/dispatch regression harness driving the real anthropic provider against a replayed SSE turn (8KB fifo args, atomic artifact publish checks).
-
-- Standard optional tool input key `intent`: a short human-readable phrase for what a call is trying to accomplish. Ignored by execution; persisted as `intent:` frontmatter on tool_result messages and rendered as the collapsed summary by the web transcript.
-- Tool result readability: flat JSON results (e.g. the bash envelope) are persisted as YAML with block scalars for multi-line values instead of `\n`-escaped strings (`plugins/core/lib/render-result`); the REPL/stream display uses the same rendering.
-- Web transcript collapses tool_result messages into `<details>` blocks labeled by `intent` (falling back to the tool name); failed calls stay expanded.
-- Assistant messages render as segments: thinking blocks and tool calls collapse into `<details>`; call summaries use `intent` (falling back to command/path/prompt) with flat-JSON inputs rendered as YAML like results.
-- Every transcript message shows its timestamp.
-- Session titles on the home page list (same title-or-id logic as the sidebar).
-
 ### Changed
-
-- edit_file promoted from repo-local incubation to the core tool: two edit shapes (`at`/`end` replace, `after` insert), tag-verified staleness, all-anchors-validated atomic writes, fresh anchors returned per changed region. read_file emits the `tag=` snapshot header it checks against.
-
-- Transcript updates are per-message deltas (stable `m<seq>` ids on every message div) — a new message costs its own bytes, `.stream` churn renders nothing; `stop`/`done` stream events force a full re-sync as the drift safety net, as do mid-inserted or removed files.
-- Thinking streams live: `thinking` deltas from the session stream render as an open block in a `#live` region during the turn; the saved message's collapsed render supersedes it.
-
-- Transcript patches transmit only when the rendered HTML actually changes (render → hash → compare): `.stream` churn during live turns no longer re-sends megabyte transcripts.
-
-- Single flat-JSON→YAML implementation (`plugins/core/lib/yaml.awk`, awk) shared by tool-result persistence and the web transcript; `render-result` is a thin driver over it. Hooks guard against a renderer failing silently (exit 0, empty output) by falling back to the raw result.
 
 ### Fixed
 
-- tool_exec treats pre-dispatch results as a cache, not authority: unparseable/truncated `.tool_dispatch` artifacts are dropped and the tool re-executed with the canonical input (the silent-corruption class that produced null-path executions and empty results).
+### Removed
 
-- Bash tool watchdogs tick (1s) and exit when their tool process dies, instead of sleeping out the full agent-specified timeout — interrupted turns no longer orphan day-scale `sleep` timers.
-- `web-send-*` spec stubs self-bound with `timeout 10`, so teardown no longer leaks flock-holding driver processes.
+## [0.4.0] - 2026-10-07
 
-- Mobile tab-return artifacts (stale cached page / Chrome error page): session HTML now served `Cache-Control: no-store`, non-SSE responses carry byte-accurate `Content-Length`, SSE asks proxies not to buffer (`X-Accel-Buffering: no`), and the stream watchdog only judges staleness in the foreground with a grace window on tab return.
-- Live patches collapsed user-expanded `<details>` blocks: toggling sets the `open` attribute, which morphs sync away from server HTML. Transcript collapsibles now carry stable ids (`m<seq>`, `m<seq>s<n>`) and the page re-applies recorded open state after each patch.
+### Added
 
-- Live transcript truncation after page load: `\r` inside message bodies (CRLF-bearing tool results) split SSE `data:` lines mid-HTML per the SSE spec, so client-side morphs applied truncated transcripts and everything after the first CR vanished. `sse_patch` now strips CRs at the transport boundary.
+- Added `harness serve`, a localhost web UI for creating and continuing sessions, with a responsive session sidebar, persistent multiline drafts, smart autoscroll, and live SSE updates. Requires `socat`; the browser asset is vendored with no build step.
+- Added web session titles and a `title` tool, live thinking, timestamps, collapsible thinking/tool calls/results, running-agent and queued-message status, a stop button, and retry controls for failed turns. User-selected expanded/collapsed state survives transcript updates.
+- Added messages during active web turns: new input joins the live conversation or queues for the next turn, with per-session serialization and collision-safe message sequencing.
+- Added a Tailscale plugin with `harness tsnet` commands for a dedicated userspace tailnet node, browser login or auth-key setup, persistent configuration, and optional systemd user services namespaced by node name.
+- Added optional tool-call `intent` descriptions, persisted with tool results and used as readable transcript summaries. Flat JSON tool inputs/results render as YAML with multiline block scalars, shared by web and terminal output.
+- Added automatic continuation after an output-token limit, bounded by `HARNESS_LENGTH_CONTINUATIONS` (default 2), instead of returning a truncated answer as complete.
 
+### Changed
+
+- Replaced the `edit_file` input protocol with atomic anchored edits: `{at,end,content}` replaces a range and `{after,content}` inserts lines. A required `tag` from `read_file` detects stale snapshots; all anchors validate before writing, and successful edits return fresh anchors for changed regions. Existing callers must migrate from the previous `type`/`pos` operations.
+- Changed the bash tool to return structured JSON with separate stdout/stderr, exit status, elapsed time, timeout, and whether it timed out.
+- Raised the default subagent timeout from 600 to 18000 seconds and added a per-call `timeout` override. Dispatch timeout wrappers allow tools time to report their own timeout results.
+- Raised default provider output limits to 64000 tokens for Anthropic, 16384 for OpenAI-compatible providers, and 131072 for ChatGPT. Updated z.ai to `glm-5.3` with a 131072-token output limit.
+- Raised the provider HTTP wall-clock default to 5400 seconds, configurable via `HARNESS_CURL_MAX_TIME`.
+- Improved message assembly with JSONL accumulation and session-stat rendering with a single pass. Web updates send only changed message elements, with full resynchronization at turn boundaries.
+
+### Fixed
+
+- Fixed failed agent loops and interrupted provider streams reporting success; failures now propagate to CLI callers and subagents. Empty Anthropic streamed responses retry once before failing explicitly.
+- Fixed oversized Anthropic content/tool blocks exceeding shell argument limits and preserved thinking fences containing embedded backticks across message save/assembly.
+- Hardened streaming tool dispatch against corrupt FIFO input and partial result files: artifacts publish atomically, and invalid cached results fall back to canonical execution.
+- Fixed bash timeouts leaving command descendants alive on systems with `setsid`, orphaned watchdog timers after interrupted turns, tmux subagent panes surviving caller termination, and stream commands leaving their agent loop running after exit.
+- Fixed edits losing symlinks, cross-filesystem atomic replacement failures, stale writes arriving during edit preparation, and insertion after a line without a trailing newline.
+- Corrected input/cache token accounting and preserved concurrent user messages during assembly and length continuation.
+- Hardened web HTTP handling with validated request lengths, byte-accurate response framing, no-store caching, gzip negotiation, and origin/host checks with explicit proxy allowlists.
+- Fixed web SSE handling of carriage returns, partial records, truncated/regrown streams, reconnects, and turn boundaries; foreground-aware watchdogs recover stale connections without repeatedly reloading hidden tabs.
 
 ### Removed
+
+- Removed `HARNESS_MAX_TURNS` and the core loop's iteration cap; hooks determine when the loop ends.
 
 ## [0.3.1] - 2026-07-14
 

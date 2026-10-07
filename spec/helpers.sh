@@ -11,6 +11,11 @@ setup() {
   export HARNESS_SESSION="${_tmpdir}/session"
   mkdir -p "${HARNESS_SESSION}/messages"
   export HARNESS_PROVIDER="mock"
+  # Default HARNESS_SESSIONS to the sandbox too: tests that invoke commands
+  # (agent, resume, ...) otherwise create REAL sessions in ~/.harness/sessions
+  # with provider=mock, polluting the session history.
+  export HARNESS_SESSIONS="${_tmpdir}/sessions"
+  mkdir -p "${HARNESS_SESSIONS}"
 }
 
 teardown() {

@@ -27,12 +27,11 @@ if [[ -z "${HARNESS_SESSIONS:-}" ]]; then
 fi
 HARNESS_MODEL="${HARNESS_MODEL:-}"
 HARNESS_PROVIDER="${HARNESS_PROVIDER:-}"
-HARNESS_MAX_TURNS="${HARNESS_MAX_TURNS:-100}"
 HARNESS_LOG="${HARNESS_LOG:-/dev/stderr}"
 HARNESS_RUN_ID="${HARNESS_RUN_ID:-$(date +%s)-$$-${RANDOM}}"
 
 # Export early — hooks run as subprocesses and need these
-export HARNESS_VERSION HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_MODEL HARNESS_PROVIDER HARNESS_MAX_TURNS HARNESS_LOG HARNESS_RUN_ID
+export HARNESS_VERSION HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_MODEL HARNESS_PROVIDER HARNESS_LOG HARNESS_RUN_ID
 
 # --------------------------------------------------------------------------- #
 #  Source discovery                                                            #
@@ -120,25 +119,37 @@ agent_loop() {
   local session_dir="$1"
   export SESSION_DIR="${session_dir}"
   trap 'printf "%s\n" "{\"type\":\"done\"}" >> "${SESSION_DIR}/.stream" 2>/dev/null' EXIT
-  local state="start" context='{}' result="" rc=0 iterations=0
+  local state="start" context='{}' result="" rc=0 errored=0
 
   while [[ -n "${state}" ]]; do
     _refresh_sources
     result="$(echo "${context}" | call "${state}")" && rc=0 || rc=$?
 
     if (( rc != 0 )); then
+      errored=1
       [[ "${state}" == "error" ]] && break
       state="error"; context="${result}"; continue
     fi
 
+    # Assemblers report the user files they actually read. A web writer can
+    # reserve a lower sequence and publish it after a higher one was read, so
+    # the follower must check exact files rather than only the highest seq.
+    if [[ "${state}" == assemble ]]; then
+      if echo "${result}" | jq -e '._assembled_user_seqs | type == "array"' >/dev/null 2>&1; then
+        echo "${result}" | jq -r '._assembled_user_seqs[]' > "${session_dir}/.assembled_user_seqs.tmp.$$"
+        mv "${session_dir}/.assembled_user_seqs.tmp.$$" "${session_dir}/.assembled_user_seqs"
+      fi
+    fi
+
     state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
     context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
-
-    (( ++iterations > HARNESS_MAX_TURNS * 3 )) && { _log "safety: exceeded max iterations"; break; }
   done
 
   local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
   [[ -n "${output}" ]] && printf '%s\n' "${output}"
+  # Non-zero when the loop ended in the error state — commands (agent/stream)
+  # propagate it so callers (agent tool panes) see failure, not a silent 0.
+  return "${errored}"
 }
 
 # --------------------------------------------------------------------------- #

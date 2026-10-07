@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# handler — per-connection HTTP entry point. stdin/stdout is the socket.
+# Sourced environment: HARNESS_ROOT, HARNESS_SESSIONS (set by serve).
+set -uo pipefail
+
+# Timestamp every stderr line (including bash's own diagnostics like
+# "printf: write error: Broken pipe") so connection-log noise is
+# correlatable with events in other logs.
+# fd 9 = the real stderr: the timestamper must keep writing there even
+# when the socket (stdout) is broken — that is exactly when the noise happens.
+exec 9>&2
+exec 2> >(
+  while IFS= read -r line; do
+    printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "${line}" >&9
+  done
+)
+
+source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"
+
+# ------------------------------------------------------------------ parse --
+METHOD="" RPATH="" BODY=""
+declare -A HTTP_HEADERS=()
+
+read -r -t 10 -a REQ_LINE || { exit 0; }
+METHOD="${REQ_LINE[0]:-}"
+RPATH="${REQ_LINE[1]:-/}"
+RPATH="${RPATH%%\?*}" # strip query string
+while IFS= read -r -t 10 h; do
+  h="${h%$'\r'}"; [[ -z "${h}" ]] && break
+  key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"
+done
+# Exact allowlists for deployments behind a loopback reverse proxy. A trusted
+# origin also permits its hostname as Host; proxies that rewrite Host to
+# loopback work with the same origin setting.
+_web_host_allowed() { # $1 = lowercased Host header
+  local allowed
+  local -a hosts origins
+  [[ "$1" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]] && return 0
+  IFS=', ' read -r -a hosts <<< "${HARNESS_WEB_ALLOWED_HOSTS:-}"
+  for allowed in "${hosts[@]}"; do
+    [[ "$1" == "${allowed,,}" ]] && return 0
+  done
+  IFS=', ' read -r -a origins <<< "${HARNESS_WEB_ALLOWED_ORIGINS:-}"
+  for allowed in "${origins[@]}"; do
+    if [[ "${allowed}" =~ ^https?://([a-zA-Z0-9.-]+(:[0-9]{1,5})?)$ ]] &&
+       [[ "$1" == "${BASH_REMATCH[1],,}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+_web_origin_allowed() { # $1 = Origin header, $2 = lowercased Host header
+  local allowed
+  local -a hosts origins
+  if [[ "$1" == "http://$2" ]]; then
+    [[ "$2" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]] && return 0
+    IFS=', ' read -r -a hosts <<< "${HARNESS_WEB_ALLOWED_HOSTS:-}"
+    for allowed in "${hosts[@]}"; do
+      [[ "$2" == "${allowed,,}" ]] && return 0
+    done
+  fi
+  IFS=', ' read -r -a origins <<< "${HARNESS_WEB_ALLOWED_ORIGINS:-}"
+  for allowed in "${origins[@]}"; do
+    [[ "$1" == "${allowed}" ]] && return 0
+  done
+  return 1
+}
+
+# The server listens on loopback, but DNS rebinding can still give it a
+# foreign Host. Check every method, including transcript reads over GET.
+host="${HTTP_HEADERS[host]:-}"
+host="${host,,}"
+if ! _web_host_allowed "${host}"; then
+  STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden host"
+  respond_request; exit 0
+fi
+if [[ "${METHOD}" == "POST" ]]; then
+  # Browsers can send cross-origin forms to loopback. Reject them before any
+  # state-changing route runs. Local HTTP clients may omit Origin.
+  origin="${HTTP_HEADERS[origin]:-}"
+  fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
+  if { [[ -n "${origin}" ]] && ! _web_origin_allowed "${origin}" "${host}"; } ||
+     { [[ -z "${origin}" && -n "${fetch_site}" ]] &&
+       [[ "${fetch_site}" != "same-origin" && "${fetch_site}" != "none" ]]; }; then
+    STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden origin"
+    respond_request; exit 0
+  fi
+  clen="${HTTP_HEADERS[content-length]:-0}"
+  # Bash recursively evaluates variable values in arithmetic contexts. A
+  # header such as BODY[$(command)] must never reach an arithmetic expression.
+  if [[ ! "${clen}" =~ ^[0-9]+$ ]]; then
+    STATUS=400; HEADERS=("Content-Type: text/plain"); BODY="invalid Content-Length"
+    respond_request; exit 0
+  fi
+  if [[ "${#clen}" -gt 7 ]] || (( 10#$clen > 1048576 )); then
+    STATUS=413; HEADERS=("Content-Type: text/plain"); BODY="request body too large"
+    respond_request; exit 0
+  fi
+  clen=$((10#$clen))
+  (( clen > 0 )) && IFS= read -r -N "${clen}" -t 30 BODY || true
+fi
+
+# ------------------------------------------------------------------ route --
+case "${METHOD}" in
+  GET)
+    if [[ "${RPATH}" == "/" ]]; then handle_home
+    elif [[ "${RPATH}" == "/datastar.js" ]]; then handle_asset datastar.js
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/events$ ]]; then handle_events "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_session "${BASH_REMATCH[1]}"
+    else handle_404; fi ;;
+  POST)
+    if [[ "${RPATH}" == "/new" ]]; then handle_new
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/stop$ ]]; then handle_stop "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)/retry$ ]]; then handle_retry "${BASH_REMATCH[1]}"
+    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_send "${BASH_REMATCH[1]}"
+    else handle_404; fi ;;
+  *) handle_404 ;;
+esac
+
+respond_request

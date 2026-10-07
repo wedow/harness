@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# render-result — human-readable rendering of tool results.
+# A flat JSON object of scalars (e.g. the bash tool's {exit, elapsed_s,
+# stdout, stderr, ...} envelope) is rendered as YAML: multi-line strings use
+# block scalars so embedded newlines read as real lines, not \n escapes.
+# Anything else passes through unchanged. The conversion lives in yaml.awk
+# (shared with the web transcript renderer); these main rules slurp stdin.
+set -euo pipefail
+_lib="$(dirname "$(readlink -f "$0")")"
+exec awk -f "${_lib}/yaml.awk" -f "${_lib}/render-driver.awk"

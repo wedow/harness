@@ -7,13 +7,9 @@ response="$(cat)"
 msg_dir="${HARNESS_SESSION}/messages"
 [[ -d "${msg_dir}" ]] || exit 0
 
-# Determine next sequence number
-last="$(ls -1 "${msg_dir}/" 2>/dev/null | sort -n | tail -1)"
-if [[ -z "${last}" ]]; then
-  seq="0001"
-else
-  seq="$(printf '%04d' $(( 10#${last%%-*} + 1 )))"
-fi
+# Reserve a sequence shared with web inserts and other message writers.
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+seq="$(_claim_message_seq "${HARNESS_SESSION}")"
 
 # Extract metadata
 model="$(echo "${response}" | jq -r '.model // ""')"
@@ -38,6 +34,19 @@ text_output=""
 tool_items="[]"
 content_blocks="$(echo "${response}" | jq -c '.content[]')"
 
+# Fence length for a block body: one past the longest backtick run at a
+# line start (min 3). A fence that cannot appear in content means an
+# embedded ``` inside thinking can never terminate the block early —
+# markdown's growing-fence rule.
+_fence_len() { # $1 = block text -> $_fence (N backticks)
+  local max=2 run line
+  while IFS= read -r line; do
+    [[ "${line}" =~ ^(\`+) ]] || continue
+    run="${#BASH_REMATCH[1]}"
+    (( run > max )) && max="${run}"
+  done <<< "$1"
+  _fence="$(printf '%*s' $(( max + 1 )) '' | tr ' ' '\`')"
+}
 while IFS= read -r block; do
   [[ -z "${block}" ]] && continue
   btype="$(echo "${block}" | jq -r '.type')"
@@ -50,9 +59,10 @@ while IFS= read -r block; do
     thinking)
       tsig="$(echo "${block}" | jq -r '.signature')"
       ttext="$(echo "${block}" | jq -r '.thinking')"
-      body+="\`\`\`thinking signature=${tsig}"$'\n'
+      _fence_len "${ttext}"
+      body+="${_fence}thinking signature=${tsig}"$'\n'
       body+="${ttext}"$'\n'
-      body+='```'$'\n'
+      body+="${_fence}"$'\n'
       ;;
     tool_use)
       tid="$(echo "${block}" | jq -r '.id')"
@@ -88,9 +98,14 @@ EOF
 
 [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg s "${stop}" --arg seq "${seq}" '{type:"stop",reason:$s,seq:$seq}')" >> "${HARNESS_SESSION}/.stream"
 
-# Return control JSON
+# Return control JSON — stop:length continuation lives in the shared lib
+source "${HARNESS_ROOT}/plugins/core/lib/continue.sh"
 if [[ "${stop}" == "tool_calls" ]]; then
+  _length_cont_reset  # fresh turn
   echo "${tool_items}" | jq '{next_state: "tool_exec", tool_calls: .}'
+elif [[ "${stop}" == "length" ]]; then
+  _length_continue "${msg_dir}"
 else
+  _length_cont_reset  # turn complete
   printf '%s' "${text_output}" | jq -Rs '{next_state: "done", output: .}'
 fi

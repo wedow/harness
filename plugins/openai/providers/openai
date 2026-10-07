@@ -15,7 +15,7 @@ set -euo pipefail
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
 OPENAI_API_KEY      API key (required for OpenAI, optional for local servers)
 OPENAI_API_URL      API endpoint (https://api.openai.com/v1/chat/completions)
-OPENAI_MAX_TOKENS   max response tokens (4096)
+OPENAI_MAX_TOKENS   max response tokens (16384)
 ENVEOF
 exit 0; }
 
@@ -23,7 +23,7 @@ streaming=false
 [[ "${1:-}" == "--stream" ]] && { streaming=true; shift; }
 
 OPENAI_API_URL="${OPENAI_API_URL:-https://api.openai.com/v1/chat/completions}"
-OPENAI_MAX_TOKENS="${OPENAI_MAX_TOKENS:-4096}"
+OPENAI_MAX_TOKENS="${OPENAI_MAX_TOKENS:-16384}"
 
 payload="$(cat)"
 

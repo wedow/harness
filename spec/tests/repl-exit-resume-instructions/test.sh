@@ -73,7 +73,7 @@ if [[ "${output}" != *"To continue this session, run harness resume ${session_id
   exit 1
 fi
 
-count="$(grep -c "To continue this session" <<<"${output}")"
+count="$(grep -c "To continue this session" <<<"${output}" || true)"
 assert_eq "resume instruction count" "${count}" "1"
 
 echo "PASS"

@@ -8,19 +8,22 @@ msg_dir="${HARNESS_SESSION}/messages"
 
 [[ -d "${msg_dir}" ]] || { echo "${payload}"; exit 0; }
 
-messages="[]"
-tool_results="[]"
+# JSONL accumulation: every emitter appends one compact JSON line; the final
+# jq folds once. The old per-message append re-serialized the whole growing
+# array through a fresh jq each time — O(n^2) in session size, ~70s for a
+# 900-message session.
+messages_jsonl=""
+tool_results_jsonl=""
+assembled_user_seqs=""
 
 flush_tool_results() {
-  if [[ "${tool_results}" != "[]" ]]; then
-    local msg
-    msg="$(echo "${tool_results}" | jq '{role: "user", content: .}')"
-    messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
-    tool_results="[]"
+  if [[ -n "${tool_results_jsonl}" ]]; then
+    messages_jsonl+="$(printf '%s' "${tool_results_jsonl}" | jq -c -s '{role: "user", content: .}')"$'\n'
+    tool_results_jsonl=""
   fi
 }
 
-for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
+for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort -V); do
   _role=""
   _call_id=""
   _error="false"
@@ -48,94 +51,104 @@ for f in $(ls -1 "${msg_dir}"/*.md 2>/dev/null | sort); do
 
   case "${_role}" in
     user)
+      candidate="${f##*/}"; assembled_user_seqs+="${candidate%%-*}"$'\n'
       flush_tool_results
-      msg="$(printf '%s' "${body}" | jq -Rs '{role: "user", content: .}')"
-      messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
+      messages_jsonl+="$(printf '%s' "${body}" | jq -c -Rs '{role: "user", content: .}')"$'\n'
       ;;
     assistant)
       flush_tool_results
-      content_blocks="[]"
+      content_blocks_jsonl=""
       current_text=""
       in_tool_block=false
       in_thinking_block=false
       tool_id="" tool_name="" tool_body=""
       thinking_sig="" thinking_text=""
+      # Fences grow to one past any leading backtick run inside the block
+      # (see receive/10-save), so embedded ``` inside thinking cannot terminate
+      # a block early. Close only on the exact opening length.
+      think_fence='```' call_fence='```'
 
       _flush_text() {
         if [[ -n "${current_text}" ]]; then
           local _flush="${current_text%$'\n'}"
           local _flush_trimmed="${_flush//[$'\n\t ']/}"
           if [[ -n "${_flush_trimmed}" ]]; then
-            content_blocks="$(printf '%s\n%s' "${content_blocks}" "$(printf '%s' "${_flush}" | jq -Rs '.')" \
-              | jq -s '.[0] + [{type: "text", text: .[1]}]')"
+            content_blocks_jsonl+="$(printf '%s' "${_flush}" | jq -c -Rs '{type: "text", text: .}')"$'\n'
           fi
           current_text=""
         fi
       }
 
       while IFS= read -r line; do
-        if [[ "${line}" =~ ^\`\`\`thinking\ signature=(.+) ]]; then
+        if ${in_thinking_block}; then
+          if [[ "${line}" == "${think_fence}" ]]; then
+            in_thinking_block=false
+            thinking_text="${thinking_text%$'\n'}"
+            content_blocks_jsonl+="$(printf '%s' "${thinking_text}" | jq -c -Rs --arg sig "${thinking_sig}" '{type: "thinking", thinking: ., signature: $sig}')"$'\n'
+          else
+            thinking_text+="${line}"$'\n'
+          fi
+          continue
+        fi
+        if ${in_tool_block}; then
+          if [[ "${line}" == "${call_fence}" ]]; then
+            in_tool_block=false
+            content_blocks_jsonl+="$(printf '%s' "${tool_body}" | jq -c --arg id "${tool_id}" --arg name "${tool_name}" '{type: "tool_use", id: $id, name: $name, input: .}')"$'\n'
+          else
+            tool_body+="${line}"
+          fi
+          continue
+        fi
+        if [[ "${line}" =~ ^(\`{3,})thinking\ signature=(.+)$ ]]; then
           _flush_text
           in_thinking_block=true
-          thinking_sig="${BASH_REMATCH[1]}"
+          think_fence="${BASH_REMATCH[1]}"
+          thinking_sig="${BASH_REMATCH[2]}"
           thinking_text=""
           continue
         fi
-        if ${in_thinking_block} && [[ "${line}" == '```' ]]; then
-          in_thinking_block=false
-          thinking_text="${thinking_text%$'\n'}"
-          content_blocks="$(printf '%s\n%s\n%s' "${content_blocks}" \
-            "$(printf '%s' "${thinking_text}" | jq -Rs '.')" \
-            "$(printf '%s' "${thinking_sig}" | jq -Rs '.')" \
-            | jq -s '.[0] + [{type: "thinking", thinking: .[1], signature: .[2]}]')"
-          continue
-        fi
-        if [[ ( "${_stop}" == "tool_calls" || -z "${_stop}" ) && "${line}" =~ ^\`\`\`tool_call\ id=([^ ]+)\ name=([^ ]+) ]]; then
+        if [[ ( "${_stop}" == "tool_calls" || -z "${_stop}" ) && "${line}" =~ ^(\`{3,})tool_call\ id=([^ ]+)\ name=([^ ]+)$ ]]; then
           _flush_text
           in_tool_block=true
-          tool_id="${BASH_REMATCH[1]}"
-          tool_name="${BASH_REMATCH[2]}"
+          call_fence="${BASH_REMATCH[1]}"
+          tool_id="${BASH_REMATCH[2]}"
+          tool_name="${BASH_REMATCH[3]}"
           tool_body=""
           continue
         fi
-        if ${in_tool_block} && [[ "${line}" == '```' ]]; then
-          in_tool_block=false
-          content_blocks="$(printf '%s\n%s' "${content_blocks}" "${tool_body}" \
-            | jq -s --arg id "${tool_id}" --arg name "${tool_name}" \
-            '.[0] + [{type: "tool_use", id: $id, name: $name, input: .[1]}]')"
-          continue
-        fi
-        if ${in_thinking_block}; then
-          thinking_text+="${line}"$'\n'
-        elif ${in_tool_block}; then
-          tool_body+="${line}"
-        else
-          current_text+="${line}"$'\n'
-        fi
+        current_text+="${line}"$'\n'
       done <<< "${body}"
 
       _flush_text
 
-      block_count="$(echo "${content_blocks}" | jq 'length')"
-      if (( block_count == 1 )) && [[ "$(echo "${content_blocks}" | jq -r '.[0].type')" == "text" ]]; then
-        msg="$(echo "${content_blocks}" | jq '{role: "assistant", content: .[0].text}')"
-      else
-        msg="$(echo "${content_blocks}" | jq '{role: "assistant", content: .}')"
+      if [[ -n "${content_blocks_jsonl}" ]]; then
+        messages_jsonl+="$(printf '%s' "${content_blocks_jsonl}" | jq -c -s \
+          'if (length == 1) and (.[0].type == "text") then {role: "assistant", content: .[0].text} else {role: "assistant", content: .} end')"$'\n'
       fi
-      messages="$(printf '%s\n%s' "${messages}" "${msg}" | jq -s '.[0] + [.[1]]')"
       ;;
     tool_result)
       if [[ "${_error}" == "true" ]]; then
-        tr="$(printf '%s' "${body}" | jq -Rs --arg id "${_call_id}" \
-          '{type: "tool_result", tool_use_id: $id, content: ., is_error: true}')"
+        tool_results_jsonl+="$(printf '%s' "${body}" | jq -c -Rs --arg id "${_call_id}" \
+          '{type: "tool_result", tool_use_id: $id, content: ., is_error: true}')"$'\n'
       else
-        tr="$(printf '%s' "${body}" | jq -Rs --arg id "${_call_id}" \
-          '{type: "tool_result", tool_use_id: $id, content: .}')"
+        tool_results_jsonl+="$(printf '%s' "${body}" | jq -c -Rs --arg id "${_call_id}" \
+          '{type: "tool_result", tool_use_id: $id, content: .}')"$'\n'
       fi
-      tool_results="$(printf '%s\n%s' "${tool_results}" "${tr}" | jq -s '.[0] + [.[1]]')"
       ;;
   esac
 done
 
 flush_tool_results
-printf '%s\n%s' "${payload}" "${messages}" | jq -c -s '.[0] + {messages: .[1]}'
+
+# The Anthropic API requires alternating roles. A user message inserted
+# mid-turn (live steering from the web UI) can land right after tool results,
+# producing two consecutive user turns — merge consecutive user messages
+# into one (string content becomes a text block; arrays concatenate).
+printf '%s\n%s\n' "${payload}" "${messages_jsonl}" | jq -c -s --arg seqs "${assembled_user_seqs}" '
+  (.[1:] | reduce .[] as $m ([];
+    if ($m.role == "user") and (length > 0) and (.[-1].role == "user")
+    then .[-1] = (.[-1] + {content: (
+        ([.[-1].content | if type == "string" then [{type: "text", text: .}] else . end]
+         + [$m.content   | if type == "string" then [{type: "text", text: .}] else . end]) | add)})
+    else . + [$m] end)) as $msgs
+  | .[0] + {messages: $msgs, _assembled_user_seqs: ($seqs | split("\n") | map(select(length > 0)))}'

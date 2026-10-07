@@ -34,6 +34,13 @@ error=false
 
 # Check for pre-dispatched result from streaming parallel execution
 _precomputed="${HARNESS_SESSION}/.tool_dispatch/${call_id}.json"
+# A dispatch artifact is a cache, not authority: if it is truncated or
+# unparseable (the silent-corruption class), drop it and execute the
+# canonical input from the state JSON instead.
+if [[ -f "${_precomputed}" ]] && ! jq -e 'has("result") and (.error | type == "boolean")' "${_precomputed}" >/dev/null 2>&1; then
+  echo "[harness] invalid pre-dispatch result for ${tool_name} ${call_id}; re-executing canonically" >> "${HARNESS_LOG:-/dev/null}" 2>/dev/null || true
+  rm -f "${_precomputed}"
+fi
 if [[ -f "${_precomputed}" ]]; then
   result="$(jq -r '.result' "${_precomputed}")"
   [[ "$(jq -r '.error' "${_precomputed}")" == "true" ]] && error=true
@@ -58,17 +65,24 @@ _display+=$'\n'
 
 if [[ "${tool_name}" == "bash" ]]; then
   _display+="$(echo "${input}" | jq -r '.command // empty' | sed 's/^/  /')"
+  # Non-command params (timeout etc.) so long-running calls are explainable
+  _display+="$(echo "${input}" | jq -r 'del(.command) | to_entries[] | select((.value // "") != "") | "  \(.key)=\(.value)"')"
 else
   _display+="$(echo "${input}" | jq -r 'to_entries[] | "  \(.key)=\(.value)"')"
 fi
 _display+=$'\n'
 
-total_lines="$(printf '%s' "${result}" | wc -l | tr -d ' ')"
+# Display copy of the result: flat JSON objects (the bash envelope) render
+# as YAML so embedded newlines read as real lines, not \n escapes.
+_lib="$(dirname "$(readlink -f "$0")")/../../lib"
+_disp="$(printf '%s' "${result}" | "${_lib}/render-result" 2>/dev/null || printf '%s' "${result}")"
+[[ -n "${_disp}" || -z "${result}" ]] || _disp="${result}"   # renderer failure guard
+total_lines="$(printf '%s' "${_disp}" | wc -l | tr -d ' ')"
 if (( total_lines > 30 )); then
-  _display+="$(head -30 <<< "${result}" | sed 's/^/  /')"
+  _display+="$(head -30 <<< "${_disp}" | sed 's/^/  /')"
   _display+="$(printf '\n  ... (%d more lines)' $(( total_lines - 30 )))"
 else
-  _display+="$(sed 's/^/  /' <<< "${result}")"
+  _display+="$(sed 's/^/  /' <<< "${_disp}")"
 fi
 
 [[ "${error}" == "true" ]] && _display+=$'\n  (error)'

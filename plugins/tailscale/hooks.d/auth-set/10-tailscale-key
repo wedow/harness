@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# 10-tailscale-key — capture a Tailscale auth key for `hs auth set tailscale`.
+set -euo pipefail
+
+input="$(cat)"
+
+# Pass through if another hook already produced a credential
+if echo "${input}" | jq -e 'has("type")' &>/dev/null; then
+  echo "${input}"
+  exit 0
+fi
+
+[[ "${HARNESS_AUTH_PROVIDER:-}" == "tailscale" ]] || { echo "${input}"; exit 0; }
+
+key="${TS_AUTHKEY:-}"
+if [[ -z "${key}" ]]; then
+  read -rsp "Tailscale auth key (tskey-..., from admin console): " key </dev/tty
+  echo >&2
+fi
+[[ "${key}" == tskey-* ]] || { echo "error: key should start with tskey-" >&2; exit 1; }
+
+jq -n --arg k "${key}" '{type: "authkey", key: $k}'

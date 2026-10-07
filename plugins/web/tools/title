@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# title — tool plugin: set the session title shown in the web UI.
+# Hides itself (schema fails) when the user has locked a title or when
+# there is no session context.
+set -euo pipefail
+
+conf="${HARNESS_SESSION:-/dev/null}/session.conf"
+
+case "${1:-}" in
+  --describe)
+    echo "set the session title (web UI)"
+    ;;
+
+  --schema)
+    [[ -f "${conf}" ]] || exit 1
+    grep -q '^title_locked=.' "${conf}" && exit 1 # locked (non-empty): stay hidden
+    cat <<'JSON'
+{
+  "name": "title",
+  "description": "Set this session's title. It is shown in the web UI sidebar and sent to you each turn. Keep it current as the session's purpose evolves. Short (3-6 words).",
+  "input_schema": {
+    "type": "object",
+    "properties": {
+      "title": {"type": "string", "description": "the new session title"}
+    },
+    "required": ["title"]
+  }
+}
+JSON
+    ;;
+
+  --exec)
+    [[ -f "${conf}" ]] || { echo "error: no session"; exit 1; }
+    grep -q '^title_locked=.' "${conf}" && { echo "error: title locked"; exit 1; }
+    t="$(jq -ser 'if length == 1 then .[0].title | select(type == "string" and length > 0) | select((explode | any(. < 32 or . == 127)) | not) else empty end')" || {
+      echo "error: title must be nonempty and contain no control characters"
+      exit 1
+    }
+    tmp="$(mktemp)"
+    TITLE_VALUE="${t}" awk 'BEGIN{n=0; t=ENVIRON["TITLE_VALUE"]} /^title=/{print "title=" t; n=1; next} {print} END{if(!n) print "title=" t}' \
+      "${conf}" > "${tmp}" && mv "${tmp}" "${conf}"
+    echo "title set: ${t}"
+    ;;
+
+  *) exit 1 ;;
+esac

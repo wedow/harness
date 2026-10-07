@@ -1,1 +1,3 @@
-.harness/
+.harness/*
+!.harness/tools/
+.playwright-cli

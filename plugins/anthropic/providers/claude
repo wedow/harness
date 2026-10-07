@@ -13,7 +13,7 @@ set -euo pipefail
 }
 [[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
 [[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
-ANTHROPIC_MAX_TOKENS  max response tokens (8192)
+ANTHROPIC_MAX_TOKENS  max response tokens (64000)
 ENVEOF
 exit 0; }
 

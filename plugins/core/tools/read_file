@@ -22,6 +22,10 @@ case "${1:-}" in
       "limit": {
         "type": "integer",
         "description": "Maximum number of lines to read (default: entire file)"
+      },
+      "intent": {
+        "type": "string",
+        "description": "Optional. Short phrase describing what this call is trying to accomplish, phrased for a human skimming the transcript. Ignored by the tool itself; UIs show it as the collapsed summary over this call's result."
       }
     },
     "required": ["path"]
@@ -60,6 +64,8 @@ JSON
     _self="$0"; [[ -L "$_self" ]] && _self="$(readlink -f "$_self")"
     lib="$(dirname "$_self")/../lib/hashline.awk"
 
+    # Whole-file snapshot tag: edit_file refuses stale edits against it
+    echo "tag=$(md5sum "${path}" | cut -c1-8)"
     if [[ -n "${limit}" ]]; then
       awk -f "${lib}" -v start_line="${start}" -v max_lines="${limit}" < "${path}"
     elif [[ -n "${offset}" ]]; then

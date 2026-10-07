@@ -31,15 +31,9 @@ case "${finish_reason}" in
   *)          stop="end" ;;
 esac
 
-# Determine sequence number
-seq=1
-if [[ -d "${msg_dir}" ]]; then
-  last="$(ls -1 "${msg_dir}" 2>/dev/null | sort | tail -1)"
-  if [[ -n "${last}" ]]; then
-    seq=$(( 10#${last%%-*} + 1 ))
-  fi
-fi
-seq_pad="$(printf '%04d' "${seq}")"
+# Reserve a sequence shared with web inserts and other message writers.
+source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
+seq_pad="$(_claim_message_seq "${HARNESS_SESSION}")"
 
 # Build the message body
 body=""
@@ -89,8 +83,14 @@ MSGEOF
 [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg s "${stop}" --arg seq "${seq_pad}" '{type:"stop",reason:$s,seq:$seq}')" >> "${HARNESS_SESSION}/.stream"
 
 # Return control JSON for the state machine
+source "${HARNESS_ROOT}/plugins/core/lib/continue.sh"
 if [[ "${stop}" == "tool_calls" ]]; then
+  _length_cont_reset  # fresh turn
   echo "${items}" | jq '{next_state: "tool_exec", tool_calls: .}'
+elif [[ "${stop}" == "length" ]]; then
+  # Output-token cap hit mid-turn: continue instead of ending truncated.
+  _length_continue "${msg_dir}"
 else
+  _length_cont_reset  # turn complete
   printf '%s' "${content}" | jq -Rs '{next_state: "done", output: .}'
 fi

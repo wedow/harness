@@ -71,7 +71,7 @@ _feed_query() {
 }
 
 _route() {
-  local result text message_id
+  local result text message_id rc
   case "${METHOD} ${RPATH}" in
     'GET /')
       HEADERS=("Content-Type: text/html; charset=utf-8")
@@ -109,7 +109,14 @@ _route() {
       text="${text%x}"
       message_id="$(printf '%s' "${REQUEST_BODY}" | jq -r '.id // empty')"
       if result="$(store_submit "${text}" main "${message_id}")"; then BODY="${result}"
-      else _json_error 500 'could not save the message'; fi
+      else
+        rc=$?
+        case "${rc}" in
+          64) _json_error 400 'invalid or reserved message id' ;;
+          65) _json_error 409 'message id already used with different text' ;;
+          *) _json_error 500 'could not save the message' ;;
+        esac
+      fi
       ;;
     'POST /api/cancel')
       if result="$(store_cancel main)"; then BODY="${result}"

@@ -8,37 +8,46 @@ store_init() (
   exec 7>"${HARNESS_DATA}/locks/journal"
   flock 7
   if [[ ! -f "${HARNESS_DATA}/HEAD" ]]; then printf '0\n' | atomic_write "${HARNESS_DATA}/HEAD"; fi
-  local seq file identity
-  seq="$(cat "${HARNESS_DATA}/HEAD")"
-  while file="${HARNESS_DATA}/events/$(printf '%012d' "$((seq+1))").json"; [[ -f "${file}" ]]; do
-    seq=$((seq+1)); identity="$(jq -r '.id' "${file}")"
-    printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/index/${identity}"
-  done
-  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD"
+  _store_recover_locked || return
   if [[ ! -f "${HARNESS_DATA}/state.json" ]]; then
     jq -cn --arg cwd "${HARNESS_CWD}" '{cursor:0,actors:{main:{id:"main",name:"main",parent:null,cwd:$cwd,inbox:[],ledger:[],request:null,turn:null,pending_jobs:[],status:"idle"}},requests:{},jobs:{}}' | atomic_write "${HARNESS_DATA}/state.json"
   fi
 )
 
+_store_recover_locked() {
+  local seq file identity
+  seq="$(cat "${HARNESS_DATA}/HEAD")" || return
+  while file="${HARNESS_DATA}/events/$(printf '%012d' "$((seq+1))").json"; [[ -f "${file}" ]]; do
+    seq=$((seq+1)); identity="$(jq -r '.id' "${file}")" || return
+    printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/index/${identity}" || return
+  done
+  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD"
+}
+
+_store_client_identity() { [[ "$1" =~ ^client-[a-f0-9]{64}$ ]]; }
+
 store_emit() (
-  local kind="$1" actor="$2" data="$3" identity="${4:-}" seq file existing suffix=0
+  local kind="$1" actor="$2" data="$3" identity="${4:-}"
   valid_id "${actor}" || return 1
   [[ -z "${identity}" ]] || valid_id "${identity}" || return 1
   printf '%s' "${data}" | jq -e 'type == "object"' >/dev/null || return 1
   exec 7>"${HARNESS_DATA}/locks/journal"; flock 7
-  seq="$(cat "${HARNESS_DATA}/HEAD")"
-  # Recover a commit interrupted between event publication and HEAD/index.
-  while file="${HARNESS_DATA}/events/$(printf '%012d' "$(( seq+1 ))").json"; [[ -f "${file}" ]]; do
-    seq=$(( seq+1 )); existing="$(jq -r '.id' "${file}")"
-    printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/index/${existing}"
-  done
-  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD"
+  _store_recover_locked || return
+  _store_publish_locked "${kind}" "${actor}" "${data}" "${identity}"
+)
+
+# Caller holds the journal lock and has recovered its published tail.
+_store_publish_locked() {
+  local kind="$1" actor="$2" data="$3" identity="$4" scope="${5:-internal}" seq file existing suffix=0
+  seq="$(cat "${HARNESS_DATA}/HEAD")" || return
   if [[ -n "${identity}" && -f "${HARNESS_DATA}/index/${identity}" ]]; then
     existing="$(cat "${HARNESS_DATA}/index/${identity}")"
     file="${HARNESS_DATA}/events/$(printf '%012d' "${existing}").json"
-    printf '%s' "${data}" | jq -e --arg k "${kind}" --arg a "${actor}" --slurpfile event "${file}" '. as $d | $event[0] | .kind==$k and .actor==$a and .data==$d' >/dev/null || { printf 'event ID already used with different content\n' >&2; return 1; }
-    printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD"
+    printf '%s' "${data}" | jq -e --arg k "${kind}" --arg a "${actor}" --slurpfile event "${file}" '. as $d | $event[0] | .kind==$k and .actor==$a and .data==$d' >/dev/null || { printf 'event ID already used with different content\n' >&2; return 65; }
     cat "${file}"; return
+  fi
+  if [[ "${scope}" != client ]] && _store_client_identity "${identity}"; then
+    printf 'client journal IDs are reserved for message submissions\n' >&2; return 64
   fi
   seq=$((seq+1))
   if [[ -z "${identity}" ]]; then
@@ -48,18 +57,39 @@ store_emit() (
     done
   fi
   file="${HARNESS_DATA}/events/$(printf '%012d' "${seq}").json"
-  printf '%s' "${data}" | jq -c --arg kind "${kind}" --arg actor "${actor}" --arg id "${identity}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson seq "${seq}" '{seq:$seq,id:$id,actor:$actor,kind:$kind,data:.,date:$date}' | atomic_write "${file}"
-  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/index/${identity}"
-  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD"
+  printf '%s' "${data}" | jq -c --arg kind "${kind}" --arg actor "${actor}" --arg id "${identity}" --arg date "$(date -u +%Y-%m-%dT%H:%M:%SZ)" --argjson seq "${seq}" '{seq:$seq,id:$id,actor:$actor,kind:$kind,data:.,date:$date}' | atomic_write "${file}" || return
+  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/index/${identity}" || return
+  printf '%s\n' "${seq}" | atomic_write "${HARNESS_DATA}/HEAD" || return
   cat "${file}"
-)
-
-store_submit() {
-  local text="$1" actor="${2:-main}" identity="${3:-}" data
-  [[ -n "${text}" ]] || { printf 'message is empty\n' >&2; return 1; }
-  data="$(printf '%s' "${text}" | jq -Rs '{kind:"user",text:.}')"
-  store_emit message "${actor}" "${data}" "${identity}" | jq -c '{id,seq}'
 }
+
+store_submit() (
+  local text="$1" actor="${2:-main}" message_id="${3:-}" identity='' data seq file result
+  if [[ -z "${text}" ]] || ! valid_id "${actor}" || { [[ -n "${message_id}" ]] && ! valid_id "${message_id}"; }; then
+    printf 'invalid message text, actor, or message id\n' >&2; return 64
+  fi
+  exec 7>"${HARNESS_DATA}/locks/journal"; flock 7
+  _store_recover_locked || return
+  if [[ -n "${message_id}" ]]; then
+    identity="client-$(printf '%s' "${actor}:${message_id}" | sha256sum | cut -d' ' -f1)"
+    # Matching pre-namespace user records remain retryable without migration.
+    # A namespaced retry takes precedence over an unrelated raw/generated ID.
+    if [[ ! -f "${HARNESS_DATA}/index/${identity}" && -f "${HARNESS_DATA}/index/${message_id}" ]]; then
+      seq="$(cat "${HARNESS_DATA}/index/${message_id}")" || return
+      file="${HARNESS_DATA}/events/$(printf '%012d' "${seq}").json"
+      if jq -e --arg a "${actor}" '.kind=="message" and .actor==$a and .data.kind=="user" and .data.message_id==null' "${file}" >/dev/null; then
+        printf '%s' "${text}" | jq -eRs --slurpfile event "${file}" '.==$event[0].data.text' >/dev/null || {
+          printf 'message id already used with different text\n' >&2; return 65
+        }
+        jq -c '{id,seq}' "${file}"; return
+      fi
+    fi
+    _store_client_identity "${message_id}" && { printf 'client journal IDs cannot be submitted as message IDs\n' >&2; return 64; }
+  fi
+  data="$(printf '%s' "${text}" | jq -Rs --arg id "${message_id}" '{kind:"user",text:.} + (if $id=="" then {} else {message_id:$id} end)')" || return
+  result="$(_store_publish_locked message "${actor}" "${data}" "${identity}" client)" || return
+  printf '%s' "${result}" | jq -c --arg id "${message_id}" '{id:(if $id=="" then .id else $id end),seq}'
+)
 
 store_cancel() { store_emit cancel "${1:-main}" '{}' | jq -c '{id,seq}'; }
 

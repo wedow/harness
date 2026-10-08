@@ -134,6 +134,59 @@ expect_status 404
 
 printf 'PASS: web API, byte framing, idempotent submissions, and origin guards\n'
 
+# Exercise publication failures and reconciliation against the real journal.
+# Every handler invocation remains isolated from the user's data/configuration.
+export HARNESS_ROOT="${root}" HARNESS_HOME="${tmp}/real-home" HARNESS_DATA="${tmp}/real-chat" HARNESS_CWD="${tmp}"
+# shellcheck disable=SC1091
+source "${root}/lib/bootstrap.sh"
+# shellcheck disable=SC1091
+source "${root}/lib/store.sh"
+store_init
+real_text=$'你好 <script>alert(1)</script>\n\n'
+message_id=00000000-0000-4000-8000-000000000001
+payload="$(jq -cn --arg text "${real_text}" --arg id "${message_id}" '{text:$text,id:$id}')"
+request POST /api/messages "${payload}"
+expect_status 200
+ack="$(body)"
+printf '%s' "${ack}" | jq -e --arg id "${message_id}" '.id==$id and .seq==1' >/dev/null
+request POST /api/messages "${payload}"
+expect_status 200
+[[ "$(body)" == "${ack}" ]]
+request GET /api/events
+expect_status 200
+body | jq -e --arg id "${message_id}" --arg text "${real_text}" '.events|length==1 and (.[0]|.id!=$id and .data.message_id==$id and .data.text==$text)' >/dev/null
+assert_length
+request POST /api/messages "$(jq -cn --arg id "${message_id}" '{text:"changed text",id:$id}')"
+expect_status 409
+grep -q '^HTTP/1.1 409 Conflict' "${response}"
+body | jq -e '.error=="message id already used with different text"' >/dev/null
+assert_length
+for reserved in "client-$(printf '%064d' 0)" "$(jq -r '.id' "${HARNESS_DATA}/events/000000000001.json")"; do
+  request POST /api/messages "$(jq -cn --arg id "${reserved}" '{text:"reserved identity",id:$id}')"
+  expect_status 400
+  body | jq -e '.error=="invalid or reserved message id"' >/dev/null
+done
+request POST /api/messages '{"text":"invalid identity","id":"../escape"}'
+expect_status 400
+[[ "$(cat "${HARNESS_DATA}/HEAD")" == 1 ]]
+
+legacy="$(store_emit message main '{"kind":"user","text":"legacy text"}' legacy-raw-id | jq -c '{id,seq}')"
+legacy_hash="$(sha256sum "${HARNESS_DATA}/events/000000000002.json")"
+request POST /api/messages '{"text":"legacy text","id":"legacy-raw-id"}'
+expect_status 200
+[[ "$(body)" == "${legacy}" ]]
+[[ "$(sha256sum "${HARNESS_DATA}/events/000000000002.json")" == "${legacy_hash}" ]]
+request POST /api/messages '{"text":"changed legacy text","id":"legacy-raw-id"}'
+expect_status 409
+[[ "$(cat "${HARNESS_DATA}/HEAD")" == 2 ]]
+
+store_emit assistant main '{"text":"existing runtime event"}' assistant-request-main-0-1 >/dev/null
+request POST /api/messages '{"text":"client uses an internal-looking name","id":"assistant-request-main-0-1"}'
+expect_status 200
+body | jq -e '.id=="assistant-request-main-0-1" and .seq==4' >/dev/null
+jq -e '.kind=="message" and .id!="assistant-request-main-0-1" and .data.message_id=="assistant-request-main-0-1"' "${HARNESS_DATA}/events/000000000004.json" >/dev/null
+printf 'PASS: real-store UUID retries, client namespace, legacy history, and HTTP 400/409 errors\n'
+
 # No runtime dependency on Node: when available, exercise the actual client
 # against a small DOM/fetch harness, including a lost submission response.
 if command -v node >/dev/null 2>&1; then
@@ -141,6 +194,7 @@ if command -v node >/dev/null 2>&1; then
 const fs = require('node:fs');
 const vm = require('node:vm');
 const assert = require('node:assert/strict');
+const {createHash} = require('node:crypto');
 const source = fs.readFileSync(process.argv[2], 'utf8');
 class Element {
   constructor() {
@@ -160,7 +214,7 @@ const calls = [];
 let now = 0;
 let online = false;
 let hideFeed = true;
-let lostAck = true;
+let lostAcks = 2;
 let clientNumber = 0;
 let mainStatus = 'idle';
 let pendingJobs = 0;
@@ -185,13 +239,14 @@ function client() {
       if (!online) throw new Error('server down');
       if (path === '/api/messages') {
         const data = JSON.parse(options.body);
-        let event = committed.find(event => event.id === data.id);
+        let event = committed.find(event => event.data.message_id === data.id);
         if (!event) {
-          event = {id: data.id, seq: committed.length + 1, actor: 'main', kind: 'message', data: {kind: 'user', text: data.text}};
+          const journalId = `client-${createHash('sha256').update(`main:${data.id}`).digest('hex')}`;
+          event = {id: journalId, seq: committed.length + 1, actor: 'main', kind: 'message', data: {kind: 'user', text: data.text, message_id: data.id}};
           committed.push(event);
         }
-        if (lostAck) { lostAck = false; throw new Error('response lost after commit'); }
-        return {ok: true, json: async () => ({id: event.id, seq: event.seq})};
+        if (lostAcks > 0) { lostAcks--; throw new Error('response lost after commit'); }
+        return {ok: true, json: async () => ({id: data.id, seq: event.seq})};
       }
       const url = new URL(path, 'http://localhost');
       const before = Number(url.searchParams.get('before'));
@@ -231,9 +286,13 @@ function text(element) { return element.textContent + element.children.map(text)
   assert.equal(submits.length, 3, 'offline send, lost response, retry');
   assert.ok(submits.every(submit => submit.id === 'client-1'), 'every retry reuses its ID');
   assert.equal(committed.length, 1);
+  assert.match(committed[0].id, /^client-[a-f0-9]{64}$/);
+  assert.notEqual(committed[0].id, committed[0].data.message_id);
+  assert.equal(JSON.parse(saved.get('harness.chat.pending'))[0].seq, undefined, 'no acknowledgement reached the browser');
   hideFeed = false;
   await tick(browser);
   assert.deepEqual(JSON.parse(saved.get('harness.chat.pending')), []);
+  assert.equal(calls.filter(call => call.path === '/api/messages').length, 3, 'feed reconciles the original client ID without another submission');
   committed.push({seq: 2, id: 'reply', actor: 'main', kind: 'assistant', data: {text: 'complete answer'}});
   committed.push({seq: 3, id: 'failure', actor: 'main', kind: 'error', data: {message: 'visible failure'}});
   const reload = client(); await flush();

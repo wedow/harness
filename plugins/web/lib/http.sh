@@ -85,6 +85,7 @@ _status_reason() {
     200) echo OK ;; 303) echo "See Other" ;; 400) echo "Bad Request" ;;
     403) echo Forbidden ;; 413) echo "Content Too Large" ;;
     404) echo "Not Found" ;; 405) echo "Method Not Allowed" ;;
+    409) echo Conflict ;;
     415) echo "Unsupported Media Type" ;;
     500) echo "Internal Server Error" ;; *) echo OK ;;
   esac

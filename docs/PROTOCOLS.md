@@ -115,10 +115,10 @@ Each committed record is a JSON object:
 ```json
 {
   "seq": 1,
-  "id": "stable-client-message-id",
+  "id": "client-e17d0be027dceb2275fd89a3ba646fb0259cc54984f23cb684d2ccf8c1cd49f8",
   "actor": "main",
   "kind": "message",
-  "data": {"kind":"user","text":"The complete input"},
+  "data": {"kind":"user","text":"The complete input","message_id":"stable-client-message-id"},
   "date": "2026-10-08T12:00:00Z"
 }
 ```
@@ -129,6 +129,16 @@ records and deduplicate repeat submissions. Records are immutable. Reusing an
 ID with different kind, actor, or content is an error.
 Startup recovers published records that were interrupted before their
 `HEAD`/index update, so committed input is visible without another submission.
+
+Supplied message IDs belong to a separate namespace. The journal identity is
+`client-` followed by the SHA-256 of `actor:message_id`; the original ID remains
+in `data.message_id` and the acknowledgement's `id`. This keeps retries scoped
+to an actor and prevents clients from claiming runtime event IDs. The physical
+`client-` identity with 64 lowercase hexadecimal digits is reserved and cannot
+be submitted as a new message ID. Submissions without an ID receive a generated
+event identity. Matching retries of older raw-ID user records return their
+original acknowledgement without changing those records; different text is a
+conflict.
 
 Chat-visible kinds are `message`, `assistant`, `tool`, and `error` for actor
 `main`. Messages have a provenance kind: `user`, `echo`, `work`, or `note` and
@@ -163,3 +173,8 @@ byte-accurate lengths and no-store headers. Request bodies are limited to 1 MiB.
 Text is rendered as text, not HTML. Exact Host/Origin allowlists protect proxy
 access and state-changing requests; see
 [the web README](../plugins/web/README.md).
+
+Clients reconcile submitted IDs against `event.data.message_id`, falling back
+to `event.id` for older records. Invalid or reserved IDs return HTTP 400; reusing
+an actor's message ID with different text returns HTTP 409. Retrying the same
+ID and text returns the original acknowledgement.

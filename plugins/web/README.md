@@ -5,19 +5,24 @@
 reactor and workers. Closing a browser or restarting the HTTP server does
 not stop an agent task.
 
-The browser polls committed messages every 1.5 seconds. It reconnects
-automatically, preserves the draft, and retries unacknowledged submissions
-with the same message ID so a lost response cannot duplicate a message.
-Earlier history loads in pages. Replies appear whole when committed;
-there is no token stream or session selector.
+Datastar receives committed messages and status changes over one SSE connection.
+An idle connection sends only a comment heartbeat every 30 seconds. The browser
+closes the connection and pauses reconnect/submission retries while hidden;
+returning to the page catches up from its durable event cursor. It preserves
+the draft and retries unacknowledged submissions with the same message ID so
+a lost response cannot duplicate a message. Earlier history loads in pages.
+Replies appear whole when committed; there is no token stream or session selector.
 
 `lib/handler` handles one request per socat connection. `lib/http.sh`
-frames responses with byte lengths and optional gzip. The standalone
-HTML, JavaScript, and CSS live in `public/`; no build step is needed.
+frames JSON and asset responses with byte lengths and optional gzip. SSE
+responses stay uncompressed and flush each complete event. The HTML, JavaScript,
+and CSS live in `public/`, including the vendored Datastar 1.0.2 module;
+no build step or external CDN is needed.
 
 | Endpoint | Behavior |
 | --- | --- |
 | `GET /` | Chat page |
+| `GET /api/stream?after=N` | Datastar SSE for complete events and status; reconnects honor `Last-Event-ID` |
 | `GET /api/events?after=N&limit=N` | Committed events after a cursor; cursor zero loads the newest page |
 | `GET /api/events?before=N&limit=N` | Earlier history in chronological order |
 | `GET /api/status` | Actor, request, job, and component activity |
@@ -31,8 +36,8 @@ the old session directory.
 ## Reverse proxies
 
 The listener stays on loopback. Requests require a loopback Host or an
-explicitly allowed proxy Host. Browser POSTs require a matching local
-Origin or an explicitly trusted public Origin:
+explicitly allowed proxy Host. Browser POSTs and SSE connections require a
+matching local Origin or an explicitly trusted public Origin when supplied:
 
 ```bash
 export HARNESS_WEB_ALLOWED_ORIGINS='https://agent.example-tailnet.ts.net'

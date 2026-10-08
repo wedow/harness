@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Harness</title>
   <link rel="stylesheet" href="/style.css">
-  <script src="/app.js" defer></script>
 </head>
 <body>
-  <main>
+  <main id="chat"
+        data-signals="{_chatFeed: ''}"
+        data-on:chat-connect="@get('/api/stream?after=' + window.harnessChat.cursor(), {requestCancellation: window.harnessChat.controller(), openWhenHidden: true, retry: 'always', retryMaxCount: Infinity, payload: {}})"
+        data-effect="window.harnessChat.receive($_chatFeed)">
     <header>
       <div><h1>Harness</h1><p>One continuous chat.</p></div>
     </header>
@@ -35,5 +37,7 @@
       <p id="notice" class="notice" role="status"></p>
     </form>
   </main>
+  <script src="/app.js"></script>
+  <script type="module" src="/datastar.js"></script>
 </body>
 </html>

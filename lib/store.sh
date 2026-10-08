@@ -115,11 +115,12 @@ store_status() {
 }
 
 store_feed() {
-  local after="${1:-0}" before="${2:-0}" limit="${3:-100}" seq head cursor count=0 events='[]' file event direction=-1 more=false
+  local after="${1:-0}" before="${2:-0}" limit="${3:-100}" forward="${4:-false}" seq head cursor count=0 events='[]' file event direction=-1 more=false
   [[ "${after}" =~ ^[0-9]{1,12}$ && "${before}" =~ ^[0-9]{1,12}$ && "${limit}" =~ ^[0-9]{1,3}$ ]] || return 1
+  [[ "${forward}" == false || "${forward}" == true ]] || return 1
   after=$((10#$after)); before=$((10#$before)); limit=$((10#$limit)); (( limit>=1 && limit<=200 )) || return 1
   head="$(cat "${HARNESS_DATA}/HEAD")"; cursor="${head}"; seq="${head}"
-  if (( after>0 )); then seq=$((after+1)); direction=1; cursor="${after}"; fi
+  if (( after>0 )) || [[ "${forward}" == true ]]; then seq=$((after+1)); direction=1; cursor="${after}"; fi
   if (( before>0 )); then seq=$((before-1)); (( seq>head )) && seq="${head}"; fi
   while (( seq>0 && seq<=head )); do
     file="${HARNESS_DATA}/events/$(printf '%012d' "${seq}").json"
@@ -135,3 +136,6 @@ store_feed() {
   done
   printf '%s' "${events}" | jq -c --argjson cursor "${cursor}" --argjson more "${more}" --argjson status "$(store_status)" '{events:sort_by(.seq),cursor:$cursor,has_more:$more,status:$status}'
 }
+
+# Stream continuation reads forward even after an initially empty journal.
+store_feed_forward() { store_feed "$1" 0 "${2:-100}" true; }

@@ -47,9 +47,11 @@ is 8080 (`HARNESS_SERVE_PORT`).
 stores are separate and must not be modified or silently migrated.
 
 The HTTP process validates requests, submits durable events, and reads feeds and
-status. It never owns a model request or agent task. Browser clients poll whole
-committed events, preserve drafts, and retry submissions with stable IDs. Keep
-this interface free of token, partial-message, and SSE streaming.
+status. It never owns a model request or agent task. Browser clients receive whole
+committed events and status changes through Datastar SSE, preserve drafts, and
+retry submissions with stable IDs. Pause connections and retries while hidden;
+resume from the durable event cursor. Keep model responses and chat messages
+complete rather than streaming tokens or partial messages.
 
 The journal serializes publication under `flock`. Event IDs deduplicate retries;
 reusing an ID with different content is an error. Publish complete records

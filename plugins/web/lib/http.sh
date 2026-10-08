@@ -11,6 +11,16 @@ respond()  { printf 'HTTP/1.1 %s %s\r\n' "$1" "$2"; }
 header()   { printf '%s: %s\r\n' "$1" "$2"; }
 end_headers() { printf '\r\n'; }
 
+respond_stream() {
+  respond 200 OK
+  header Content-Type 'text/event-stream; charset=utf-8'
+  header Cache-Control 'no-cache, no-store'
+  header X-Accel-Buffering no
+  # A close-delimited response remains open until this stream disconnects.
+  header Connection close
+  end_headers
+}
+
 _accepts_gzip() {
   local value="${HTTP_HEADERS[accept-encoding]:-}" item coding param q
   local gzip_seen=false gzip_ok=false wildcard_ok=false

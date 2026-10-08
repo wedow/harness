@@ -8,6 +8,7 @@
   const notice = byId('notice');
   const older = byId('older');
   const cancel = byId('cancel');
+  const chat = byId('chat');
   const draftKey = 'harness.chat.draft';
   const pendingKey = 'harness.chat.pending';
   const events = new Map();
@@ -18,7 +19,10 @@
   let initial = true;
   let loadingOlder = false;
   let hasOlder = true;
-  let failures = 0;
+  let datastarReady = false;
+  let liveController = null;
+  let retryTimer = null;
+  let connected = false;
 
   function saved(key, fallback) {
     try { return localStorage.getItem(key) ?? fallback; }
@@ -201,7 +205,7 @@
     item.state = 'sending'; savePending(); render();
     try {
       const ack = await request('/api/messages', {text: item.text, id: item.id});
-      // A poll can observe the committed message before its acknowledgement.
+      // The feed can observe a committed message before its acknowledgement.
       if (!pending.has(item.id)) return;
       item.state = 'accepted'; item.seq = Number(ack.seq);
       if (item.seq && item.seq <= cursor) pending.delete(item.id);
@@ -215,44 +219,84 @@
     } finally { savePending(); render(); sendPending(); }
   }
   function sendPending() {
+    clearTimeout(retryTimer); retryTimer = null;
+    if (document.hidden) return;
     for (const item of pending.values()) {
       if (item.state === 'sending') return;
       if (item.state !== 'queued') continue;
-      if ((item.retryAt || 0) <= Date.now()) sendOne(item);
+      const delay = (item.retryAt || 0) - Date.now();
+      if (delay > 0) retryTimer = setTimeout(sendPending, delay);
+      else sendOne(item);
       return;
     }
   }
 
-  async function poll() {
-    let delay = 1500;
-    try {
-      const feed = await request(`/api/events?after=${cursor}&limit=100`);
-      const changed = ingest(feed.events || []);
-      cursor = Math.max(cursor, Number(feed.cursor) || 0);
-      let reconciled = false;
-      for (const item of pending.values()) {
-        if (item.state === 'accepted' && item.seq && item.seq <= cursor) {
-          pending.delete(item.id); reconciled = true;
-        }
+  function receive(payload) {
+    if (typeof payload !== 'string' || !payload) return;
+    let feed;
+    try { feed = JSON.parse(payload); }
+    catch { return; }
+    if (!Array.isArray(feed?.events) || !Number.isSafeInteger(feed.cursor) || feed.cursor < 0) return;
+    const changed = ingest(feed.events);
+    cursor = Math.max(cursor, feed.cursor);
+    let reconciled = false;
+    for (const item of pending.values()) {
+      if (item.state === 'accepted' && item.seq && item.seq <= cursor) {
+        pending.delete(item.id); reconciled = true;
       }
-      if (reconciled) savePending();
-      if (initial) hasOlder = Boolean(feed.has_more);
-      if (changed || initial || reconciled) render();
-      activity(feed.status);
-      connection.textContent = 'Connected'; connection.classList.remove('offline');
-      failures = 0;
-      // has_more on the initial newest page means older history, not new events.
-      if (!initial && feed.has_more) delay = 0;
-      initial = false;
-    } catch {
-      failures += 1;
-      connection.textContent = 'Reconnecting…'; connection.classList.add('offline');
-      delay = Math.min(15000, 1500 * 2 ** Math.min(failures, 3));
-    } finally {
-      sendPending();
-      setTimeout(poll, delay);
     }
+    if (reconciled) savePending();
+    if (initial) hasOlder = Boolean(feed.has_more);
+    if (changed || initial || reconciled) render();
+    activity(feed.status);
+    initial = false;
+    if (!document.hidden) connectionState('Connected');
+    sendPending();
   }
+
+  function connectionState(text) {
+    connected = text === 'Connected';
+    connection.textContent = text;
+    if (connected) connection.classList.remove('offline');
+    else connection.classList.add('offline');
+  }
+  function connect() {
+    if (!datastarReady || document.hidden || liveController) return;
+    liveController = new AbortController();
+    connectionState('Connecting…');
+    chat.dispatchEvent(new CustomEvent('chat-connect'));
+    sendPending();
+  }
+  function disconnect() {
+    liveController?.abort(); liveController = null;
+    clearTimeout(retryTimer); retryTimer = null;
+    connectionState('Paused while hidden');
+  }
+
+  // Datastar owns transport parsing, backoff, and Last-Event-ID. Aborting its
+  // controller also cancels queued reconnects, so hidden tabs remain idle.
+  window.harnessChat = {cursor: () => cursor, controller: () => liveController, receive};
+  document.addEventListener('datastar-ready', () => { datastarReady = true; connect(); });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) disconnect();
+    else connect();
+  });
+  window.addEventListener('pagehide', disconnect);
+  window.addEventListener('pageshow', connect);
+  document.addEventListener('datastar-fetch', event => {
+    if (event.detail?.el !== chat || document.hidden || !liveController) return;
+    const type = event.detail.type;
+    if (type === 'retrying' || type === 'error' || type === 'retries-failed') connectionState('Reconnecting…');
+    else if (type === 'datastar-patch-signals') {
+      const recovered = !connected;
+      connectionState('Connected');
+      // Signal effects ingest committed inputs before reconnect retries send.
+      queueMicrotask(() => {
+        if (recovered) for (const item of pending.values()) if (item.state === 'queued') item.retryAt = 0;
+        sendPending();
+      });
+    }
+  });
 
   older.addEventListener('click', async () => {
     if (loadingOlder || !oldest) return;
@@ -288,5 +332,5 @@
     catch { notice.textContent = 'Could not request a stop. Try again when connected.'; }
   });
   render();
-  poll();
+  if (document.hidden) connectionState('Paused while hidden');
 })();

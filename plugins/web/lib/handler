@@ -2,9 +2,13 @@
 # One HTTP request per socat connection. The reactor owns execution.
 set -euo pipefail
 
+# Per-connection children never retain component/projection ownership locks.
+exec 5>&- 6>&- 7>&- 8>&- 9>&-
 source "${HARNESS_ROOT}/lib/bootstrap.sh"
 source "${HARNESS_ROOT}/lib/store.sh"
 source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
+source "${HARNESS_ROOT}/plugins/web/lib/stream.sh"
+STREAMING=false
 
 _json_error() {
   STATUS="$1"
@@ -91,8 +95,8 @@ _route() {
       HEADERS=("Content-Type: text/html; charset=utf-8")
       BODY="$(cat "${HARNESS_ROOT}/plugins/web/public/index.html")"
       ;;
-    'GET /app.js'|'GET /style.css')
-      if [[ "${RPATH}" == /app.js ]]; then
+    'GET /app.js'|'GET /datastar.js'|'GET /style.css')
+      if [[ "${RPATH}" == *.js ]]; then
         HEADERS=("Content-Type: text/javascript; charset=utf-8")
       else
         HEADERS=("Content-Type: text/css; charset=utf-8")
@@ -103,6 +107,10 @@ _route() {
       _feed_query "${QUERY}" || { _json_error 400 'invalid feed cursor or page size'; return; }
       if result="$(store_feed "${AFTER}" "${BEFORE}" "${LIMIT}")"; then BODY="${result}"
       else _json_error 500 'could not read the chat'; fi
+      ;;
+    'GET /api/stream')
+      _stream_query "${QUERY}" || { _json_error 400 'invalid stream cursor or query'; return; }
+      STREAMING=true
       ;;
     'GET /api/status')
       if result="$(store_status)"; then BODY="${result}"
@@ -165,12 +173,14 @@ _main() {
   host="${HTTP_HEADERS[host]:-}"; host="${host,,}"
   _web_host_allowed "${host}" || { _json_error 403 'forbidden host'; respond_request; return; }
   REQUEST_BODY=""
-  if [[ "${METHOD}" == POST ]]; then
+  if [[ "${METHOD}" == POST || "${METHOD} ${RPATH}" == 'GET /api/stream' ]]; then
     origin="${HTTP_HEADERS[origin]:-}"; fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
     if { [[ -n "${origin}" ]] && ! _web_origin_allowed "${origin}" "${host}"; } ||
        { [[ -z "${origin}" && -n "${fetch_site}" && "${fetch_site}" != same-origin && "${fetch_site}" != none ]]; }; then
       _json_error 403 'forbidden origin'; respond_request; return
     fi
+  fi
+  if [[ "${METHOD}" == POST ]]; then
     [[ -z "${HTTP_HEADERS[transfer-encoding]:-}" ]] || { _json_error 400 'unsupported body framing'; respond_request; return; }
     clen="${HTTP_HEADERS[content-length]:-0}"
     [[ "${clen}" =~ ^[0-9]+$ ]] || { _json_error 400 'invalid Content-Length'; respond_request; return; }
@@ -189,7 +199,8 @@ _main() {
   HEADERS=("Content-Type: application/json; charset=utf-8")
   if ! store_init; then _json_error 500 'could not open the chat'; respond_request; return; fi
   _route
-  respond_request
+  if [[ "${STREAMING}" == true ]]; then _web_stream "${STREAM_AFTER}"
+  else respond_request; fi
 }
 
 _main

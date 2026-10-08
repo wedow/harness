@@ -157,22 +157,36 @@ remain in the journal and memory even when cancellation suppresses that wakeup.
 
 ## Web interface
 
-The loopback HTTP process exposes JSON endpoints:
+The loopback HTTP process exposes JSON endpoints and a Datastar SSE feed:
 
 | Request | Result |
 | --- | --- |
 | `POST /api/messages` with `{text,id?}` | Durable acknowledgement `{id,seq}` |
+| `GET /api/stream?after=N` | Complete event batches and status changes over SSE |
 | `GET /api/events?after=N&limit=N` | Next visible events after a cursor; zero loads the newest page |
 | `GET /api/events?before=N&limit=N` | Earlier visible events in chronological order |
 | `GET /api/status` | Actor/component/request/job status |
 | `POST /api/cancel` | Durable cancellation request for `main` |
 
 Feed responses are `{events,cursor,has_more,status}`. Older-history paging does
-not replace the browser's forward cursor. Page sizes are 1–200. Responses have
-byte-accurate lengths and no-store headers. Request bodies are limited to 1 MiB.
+not replace the browser's forward cursor. Page sizes are 1–200. JSON responses
+have byte-accurate lengths and no-store headers. Request bodies are limited to 1 MiB.
 Text is rendered as text, not HTML. Exact Host/Origin allowlists protect proxy
-access and state-changing requests; see
+access, state-changing requests, and SSE connections; see
 [the web README](../plugins/web/README.md).
+
+SSE frames use `event: datastar-patch-signals` and `id: N`, where `N` is the
+global journal cursor, including events hidden from the main chat. The data line
+is `signals {"_chatFeed":"..."}`; the signal is a JSON string containing the
+complete `{events,cursor,has_more,status}` batch. This replaces each batch
+atomically without merging arbitrary message or tool fields into reactive
+signals. `Last-Event-ID` takes precedence over the query cursor on reconnect.
+Cursor zero initially loads the newest page, then continuation reads forward
+even if the chat was empty. The optional opaque `datastar` query parameter is
+ignored; it never controls the cursor or request behavior. SSE has no gzip or
+Content-Length, sends status changes without requiring a new chat message, and
+uses 30-second comment heartbeats when idle. Browsers disconnect while hidden
+and reconnect from their cursor when visible. Model responses remain complete.
 
 Clients reconcile submitted IDs against `event.data.message_id`, falling back
 to `event.id` for older records. Invalid or reserved IDs return HTTP 400; reusing

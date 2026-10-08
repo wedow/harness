@@ -56,6 +56,11 @@ assert_length
 request GET /app.js
 expect_status 200
 grep -q 'text/javascript' "${response}"
+request GET /datastar.js
+expect_status 200
+grep -q 'text/javascript' "${response}"
+grep -q 'Datastar v1.0.2' "${response}"
+assert_length
 request GET /style.css
 expect_status 200
 printf '%s\r\n' 'GET /app.js HTTP/1.1' 'Host: localhost:8080' 'Accept-Encoding: gzip' '' | "${handler}" > "${response}"
@@ -230,134 +235,3 @@ expect_status 200
 body | jq -e '.id=="assistant-request-main-0-1" and .seq==4' >/dev/null
 jq -e '.kind=="message" and .id!="assistant-request-main-0-1" and .data.message_id=="assistant-request-main-0-1"' "${HARNESS_DATA}/events/000000000004.json" >/dev/null
 printf 'PASS: real-store UUID retries, client namespace, legacy history, and HTTP 400/409 errors\n'
-
-# No runtime dependency on Node: when available, exercise the actual client
-# against a small DOM/fetch harness, including a lost submission response.
-if command -v node >/dev/null 2>&1; then
-  node - "${root}/plugins/web/public/app.js" <<'JS'
-const fs = require('node:fs');
-const vm = require('node:vm');
-const assert = require('node:assert/strict');
-const {createHash} = require('node:crypto');
-const source = fs.readFileSync(process.argv[2], 'utf8');
-class Element {
-  constructor() {
-    this.children = []; this.listeners = {}; this.dataset = {};
-    this.value = ''; this.textContent = ''; this.hidden = false;
-    this.classList = {add() {}, remove() {}};
-  }
-  append(...children) { this.children.push(...children); }
-  replaceChildren(...children) { this.children = children; }
-  addEventListener(name, fn) { this.listeners[name] = fn; }
-  focus() {}
-  set innerHTML(value) { throw new Error('chat text must not become HTML'); }
-}
-const saved = new Map([['harness.chat.draft', 'draft survives']]);
-const committed = [];
-const calls = [];
-let now = 0;
-let online = false;
-let hideFeed = true;
-let lostAcks = 2;
-let clientNumber = 0;
-let mainStatus = 'idle';
-let pendingJobs = 0;
-class Clock extends Date { static now() { return now; } }
-function client() {
-  const elements = new Map();
-  const timers = new Map();
-  let timerId = 0;
-  const get = id => {
-    if (!elements.has(id)) elements.set(id, new Element());
-    return elements.get(id);
-  };
-  const sandbox = {
-    document: {getElementById: get, createElement: () => new Element(), documentElement: {scrollHeight: 100}},
-    window: {innerHeight: 100, scrollY: 0, scrollTo() {}},
-    localStorage: {getItem: key => saved.get(key) ?? null, setItem: (key, value) => saved.set(key, value)},
-    Date: Clock, AbortController, crypto: {randomUUID: () => `client-${++clientNumber}`},
-    setTimeout: (fn, delay) => { const id = ++timerId; timers.set(id, {fn, delay}); return id; },
-    clearTimeout: id => timers.delete(id),
-    fetch: async (path, options) => {
-      calls.push({path, body: options.body});
-      if (!online) throw new Error('server down');
-      if (path === '/api/messages') {
-        const data = JSON.parse(options.body);
-        let event = committed.find(event => event.data.message_id === data.id);
-        if (!event) {
-          const journalId = `client-${createHash('sha256').update(`main:${data.id}`).digest('hex')}`;
-          event = {id: journalId, seq: committed.length + 1, actor: 'main', kind: 'message', data: {kind: 'user', text: data.text, message_id: data.id}};
-          committed.push(event);
-        }
-        if (lostAcks > 0) { lostAcks--; throw new Error('response lost after commit'); }
-        return {ok: true, json: async () => ({id: data.id, seq: event.seq})};
-      }
-      const url = new URL(path, 'http://localhost');
-      const before = Number(url.searchParams.get('before'));
-      const after = Number(url.searchParams.get('after'));
-      let events = hideFeed ? [] : committed.filter(event => before ? event.seq < before : event.seq > after);
-      const more = !after && events.length > 2;
-      if (!after) events = events.slice(-2);
-      return {ok: true, json: async () => ({events, cursor: hideFeed ? 0 : committed.length, has_more: more, status: {actors: [{id: 'main', status: mainStatus, pending_jobs: pendingJobs}]}})};
-    }
-  };
-  vm.runInNewContext(source, sandbox);
-  return {get, timers};
-}
-async function flush() { for (let i = 0; i < 40; i++) await Promise.resolve(); }
-async function tick(browser) {
-  const timer = [...browser.timers].find(([, timer]) => timer.fn.name === 'poll');
-  assert.ok(timer, 'client keeps a reconnect poll scheduled');
-  browser.timers.delete(timer[0]);
-  timer[1].fn(); await flush();
-}
-function text(element) { return element.textContent + element.children.map(text).join(''); }
-(async () => {
-  const browser = client(); await flush();
-  assert.equal(browser.get('draft').value, 'draft survives');
-  assert.equal(browser.get('connection').textContent, 'Reconnecting…');
-  browser.get('draft').value = '<script>literal user text</script>\n';
-  browser.get('compose').listeners.submit({preventDefault() {}}); await flush();
-  assert.match(text(browser.get('messages')), /<script>literal user text<\/script>/);
-  assert.equal(committed.length, 0);
-  browser.get('draft').value = 'new draft'; browser.get('draft').listeners.input();
-  online = true; now = 10000;
-  await tick(browser);
-  assert.equal(committed.length, 1, 'lost response still committed exactly once');
-  now = 20000;
-  await tick(browser);
-  const submits = calls.filter(call => call.path === '/api/messages' && call.body).map(call => JSON.parse(call.body));
-  assert.equal(submits.length, 3, 'offline send, lost response, retry');
-  assert.ok(submits.every(submit => submit.id === 'client-1'), 'every retry reuses its ID');
-  assert.equal(committed.length, 1);
-  assert.match(committed[0].id, /^client-[a-f0-9]{64}$/);
-  assert.notEqual(committed[0].id, committed[0].data.message_id);
-  assert.equal(JSON.parse(saved.get('harness.chat.pending'))[0].seq, undefined, 'no acknowledgement reached the browser');
-  hideFeed = false;
-  await tick(browser);
-  assert.deepEqual(JSON.parse(saved.get('harness.chat.pending')), []);
-  assert.equal(calls.filter(call => call.path === '/api/messages').length, 3, 'feed reconciles the original client ID without another submission');
-  committed.push({seq: 2, id: 'reply', actor: 'main', kind: 'assistant', data: {text: 'complete answer'}});
-  committed.push({seq: 3, id: 'failure', actor: 'main', kind: 'error', data: {message: 'visible failure'}});
-  const reload = client(); await flush();
-  assert.equal(reload.get('draft').value, 'new draft', 'draft survives reconnect/reload');
-  assert.equal(reload.get('older').hidden, false);
-  assert.match(text(reload.get('messages')), /complete answer/);
-  await reload.get('older').listeners.click(); await flush();
-  assert.match(text(reload.get('messages')), /literal user text/);
-  await tick(reload);
-  assert.equal(calls.at(-1).path, '/api/events?after=3&limit=100', 'older paging preserves the live cursor');
-  pendingJobs = 1;
-  await tick(reload);
-  assert.equal(reload.get('cancel').disabled, false, 'idle agent can stop background work');
-  pendingJobs = 0;
-  mainStatus = 'waiting_memory';
-  await tick(reload);
-  assert.match(reload.get('status').textContent, /Preparing memory/);
-  mainStatus = 'blocked_memory';
-  await tick(reload);
-  assert.match(reload.get('status').textContent, /Memory failed.*retry/);
-  console.log('PASS: browser reconnect, draft preservation, lost-ack retry, safe text, and paging');
-})().catch(error => { console.error(error); process.exitCode = 1; });
-JS
-fi

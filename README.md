@@ -75,9 +75,10 @@ harness worker 1     # one model worker; use different numbers for others
 ```
 
 The web server saves input and displays completed messages. It does not make
-model calls or own the active task. The browser polls with a cursor, reconnects
-automatically, preserves drafts, and retries a submission using its original
-ID when a response is lost. Older history loads in pages.
+model calls or own the active task. Datastar delivers complete messages and
+status changes over SSE. The browser pauses its connection while hidden and
+reconnects from its cursor, preserves drafts, and retries a submission using
+its original ID when a response is lost. Older history loads in pages.
 
 The reactor projects committed events into actor state, creates model requests,
 and launches background tool jobs. Workers claim model requests from the

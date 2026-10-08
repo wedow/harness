@@ -112,6 +112,8 @@ fi
 _provider_auth_unlock
 
 payload="$(_provider_validate_request)"
+# provider_call keeps its HARNESS_MODEL changes inside its own subshell.
+# shellcheck disable=SC2031
 request="$(printf '%s' "${payload}" | jq -ce --arg model "${HARNESS_MODEL:-}" --argjson budget "${CHATGPT_MAX_TOKENS:-131072}" '
   def assistant_items:
     if .provider_state.protocol == "chatgpt" then
@@ -174,9 +176,9 @@ normalized="$(printf '%s' "${response}" | jq -ce '
   | {blocks:$blocks,
     stop:(if .status == "incomplete" then "length"
       elif any($blocks[]; .type == "tool_call") then "tool_calls" else "end" end),
-    usage:{input_tokens:(.usage.input_tokens // 0),output_tokens:(.usage.output_tokens // 0),
-      total_tokens:(.usage.total_tokens // ((.usage.input_tokens // 0)+(.usage.output_tokens // 0))),
-      cache_read_input_tokens:(.usage.input_tokens_details.cached_tokens // 0),cache_creation_input_tokens:0},
+    usage:{input_tokens:.usage.input_tokens,output_tokens:.usage.output_tokens,
+      total_tokens:(if .usage.total_tokens != null then .usage.total_tokens elif .usage.input_tokens != null and .usage.output_tokens != null then .usage.input_tokens+.usage.output_tokens else null end),
+      cache_read_input_tokens:.usage.input_tokens_details.cached_tokens,cache_creation_input_tokens:.usage.input_tokens_details.cache_write_tokens},
     provider_state:{protocol:"chatgpt",output:$r.output}}
   ' 2>/dev/null)" || { echo 'ChatGPT API returned malformed output or tool arguments' >&2; exit 1; }
 printf '%s' "${normalized}" | _provider_validate_response

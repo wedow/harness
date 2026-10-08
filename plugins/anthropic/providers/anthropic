@@ -11,7 +11,7 @@ set -euo pipefail
 }
 [[ "${1:-}" == --defaults ]] && { echo 'model=claude-sonnet-4-6'; exit 0; }
 [[ "${1:-}" == --env ]] && {
-  printf '%s\n' 'ANTHROPIC_API_KEY     API key' 'ANTHROPIC_API_URL     API endpoint (https://api.anthropic.com/v1/messages)' 'ANTHROPIC_MAX_TOKENS  max response tokens (64000)'
+  printf '%s\n' 'ANTHROPIC_API_KEY     API key' 'ANTHROPIC_API_URL     API endpoint (https://api.anthropic.com/v1/messages)' 'ANTHROPIC_MAX_TOKENS  max response tokens (64000)' 'ANTHROPIC_PROMPT_CACHE auto (native endpoint), explicit (any endpoint), off'
   exit 0
 }
 [[ $# == 0 ]] || { echo 'unsupported provider option' >&2; exit 1; }
@@ -28,7 +28,13 @@ else
 fi
 url="${ANTHROPIC_API_URL:-https://api.anthropic.com/v1/messages}"
 caching=false
-[[ "${url}" != https://api.anthropic.com/* ]] || caching=true
+automatic=false
+case "${ANTHROPIC_PROMPT_CACHE:-auto}" in
+  auto) [[ "${url}" != https://api.anthropic.com/* ]] || { caching=true; automatic=true; } ;;
+  explicit) caching=true ;;
+  off) ;;
+  *) echo 'ANTHROPIC_PROMPT_CACHE must be auto, explicit, or off' >&2; exit 1 ;;
+esac
 headers=(-H "${auth_header}" -H "anthropic-version: ${ANTHROPIC_API_VERSION:-2023-06-01}" -H 'content-type: application/json')
 [[ -z "${ANTHROPIC_BETA:-}" ]] || headers+=(-H "anthropic-beta: ${ANTHROPIC_BETA}")
 
@@ -57,6 +63,8 @@ request="$(printf '%s' "${payload}" | jq -ce --argjson caching "${caching}" '
       then .[-1].content += $m.content else . + [$m] end)
   ' 2>/dev/null)" || { echo 'invalid Anthropic message continuation' >&2; exit 1; }
 # Fold the canonical payload and translated messages without passing large text in argv.
+# provider_call keeps its HARNESS_MODEL changes inside its own subshell.
+# shellcheck disable=SC2031
 request="$(printf '%s\n%s\n' "${payload}" "${request}" | jq -cs \
   --arg model "${HARNESS_MODEL:-}" --argjson budget "${ANTHROPIC_MAX_TOKENS:-64000}" '
   .[0] as $p | {model:($p.model // $model),max_tokens:$budget,system:($p.system // ""),messages:.[1]}
@@ -66,10 +74,20 @@ for field in temperature top_p top_k; do
   [[ -z "${!var:-}" ]] || request="$(printf '%s' "${request}" | jq -c --arg key "${field}" --argjson value "${!var}" '.[$key]=$value')"
 done
 if [[ "${caching}" == true ]]; then
+  request="$(printf '%s' "${request}" | jq -ce --argjson automatic "${automatic}" '
+    if (.system | type) == "string" and (.system | length) > 0
+      then .system=[{type:"text",text:.system,cache_control:{type:"ephemeral"}}] else . end
+    | ([.tools[]?, (if (.system|type)=="array" then .system[] else empty end), .messages[].content[]]
+      | map(select(.cache_control != null)) | length) as $marks
+    | if $marks > 4 then error("too many explicit cache marks")
+      elif $automatic and $marks < 4 then .cache_control={type:"ephemeral"} else . end
+    ' 2>/dev/null)" || { echo 'Anthropic prompt caching permits at most four cache breakpoints' >&2; exit 1; }
+else
+  # Remove only cache annotations, preserving tool argument properties.
   request="$(printf '%s' "${request}" | jq -c '
-    .cache_control={type:"ephemeral"}
-    | if (.system | type) == "string" and (.system | length) > 0
-      then .system=[{type:"text",text:.system,cache_control:{type:"ephemeral"}}] else . end')"
+    if (.system|type)=="array" then .system |= map(del(.cache_control)) else . end
+    | if .tools != null then .tools |= map(del(.cache_control)) else . end
+    | .messages |= map(.content |= map(del(.cache_control)))')"
 fi
 if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != off ]]; then
   request="$(printf '%s' "${request}" | jq -c --arg effort "${HARNESS_THINKING}" '.thinking={type:"adaptive"} | .output_config={effort:$effort}')"
@@ -80,6 +98,11 @@ normalized="$(printf '%s' "${response}" | jq -ce -s '
   | if .type == "error" then error(.error.message // "API error") else . end
   | if (.content | type) != "array" then error("missing content") else . end
   | . as $r
+  | .usage as $u
+  | (if $u.cache_read_input_tokens == null then $u.prompt_tokens_details.cached_tokens else $u.cache_read_input_tokens end) as $read
+  | (if $u.cache_creation_input_tokens == null then $u.prompt_tokens_details.cache_write_tokens else $u.cache_creation_input_tokens end) as $write
+  | (if $u.input_tokens != null then $u.input_tokens + ($read // 0) + ($write // 0) else $u.prompt_tokens end) as $input
+  | (if $u.output_tokens != null then $u.output_tokens else $u.completion_tokens end) as $output
   | [.content[] | if .type == "text" then {type:"text",text:.text}
     elif .type == "tool_use" then {type:"tool_call",id:.id,name:.name,input:.input}
     elif .type == "thinking" or .type == "redacted_thinking" then empty
@@ -89,9 +112,9 @@ normalized="$(printf '%s' "${response}" | jq -ce -s '
         elif .stop_reason == "max_tokens" then "length"
         elif .stop_reason == "end_turn" or .stop_reason == "stop_sequence" then "end"
         else error("missing or unsupported stop reason") end),
-      usage:{input_tokens:(.usage.input_tokens // 0),output_tokens:(.usage.output_tokens // 0),
-        total_tokens:((.usage.input_tokens // 0)+(.usage.output_tokens // 0)),
-        cache_read_input_tokens:(.usage.cache_read_input_tokens // 0),cache_creation_input_tokens:(.usage.cache_creation_input_tokens // 0)},
+      usage:{input_tokens:$input,output_tokens:$output,
+        total_tokens:(if $u.total_tokens != null then $u.total_tokens elif $input != null and $output != null then $input+$output else null end),
+        cache_read_input_tokens:$read,cache_creation_input_tokens:$write},
       provider_state:{protocol:"anthropic",content:$r.content}}
   ' 2>/dev/null)" || { echo 'Anthropic API returned an error or malformed response' >&2; exit 1; }
 printf '%s' "${normalized}" | _provider_validate_response

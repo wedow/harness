@@ -18,6 +18,8 @@ set -euo pipefail
 source "${HARNESS_ROOT:-$(cd "$(dirname "$0")/../../.." >/dev/null && pwd)}/lib/provider.sh"
 
 payload="$(_provider_validate_request)"
+# provider_call keeps its HARNESS_MODEL changes inside its own subshell.
+# shellcheck disable=SC2031
 request="$(printf '%s' "${payload}" | jq -ce --arg model "${HARNESS_MODEL:-}" --argjson budget "${OPENAI_MAX_TOKENS:-16384}" '
   def assistant_message:
     if .provider_state.protocol == "openai" then
@@ -65,9 +67,9 @@ normalized="$(printf '%s' "${response}" | jq -ce -s '
     stop:(if $c.finish_reason == "tool_calls" then "tool_calls"
       elif $c.finish_reason == "length" then "length"
       elif $c.finish_reason == "stop" then "end" else error("missing or unsupported stop reason") end),
-    usage:{input_tokens:(.usage.prompt_tokens // 0),output_tokens:(.usage.completion_tokens // 0),
-      total_tokens:(.usage.total_tokens // ((.usage.prompt_tokens // 0)+(.usage.completion_tokens // 0))),
-      cache_read_input_tokens:(.usage.prompt_tokens_details.cached_tokens // 0),cache_creation_input_tokens:0},
+    usage:{input_tokens:.usage.prompt_tokens,output_tokens:.usage.completion_tokens,
+      total_tokens:(if .usage.total_tokens != null then .usage.total_tokens elif .usage.prompt_tokens != null and .usage.completion_tokens != null then .usage.prompt_tokens+.usage.completion_tokens else null end),
+      cache_read_input_tokens:.usage.prompt_tokens_details.cached_tokens,cache_creation_input_tokens:.usage.prompt_tokens_details.cache_write_tokens},
     provider_state:{protocol:"openai",message:$m}}
   ' 2>/dev/null)" || { echo 'OpenAI API returned an error or malformed response/tool arguments' >&2; exit 1; }
 printf '%s' "${normalized}" | _provider_validate_response

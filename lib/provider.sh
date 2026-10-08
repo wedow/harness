@@ -199,7 +199,15 @@ _provider_validate_response() {
     | if (.usage | type == "object") and all(.usage.input_tokens,.usage.output_tokens,.usage.total_tokens,.usage.cache_read_input_tokens,.usage.cache_creation_input_tokens;
         . == null or (type == "number" and . >= 0 and floor == .))
       then . else error("invalid response usage") end
-  ' 2>/dev/null || { echo 'invalid provider response: empty, malformed, duplicate calls, or inconsistent stop reason' >&2; return 1; }
+    | .usage as $u
+    | if $u.input_tokens != null and
+        (($u.cache_read_input_tokens != null and $u.cache_read_input_tokens > $u.input_tokens)
+         or ($u.cache_creation_input_tokens != null and $u.cache_creation_input_tokens > $u.input_tokens)
+         or ($u.cache_read_input_tokens != null and $u.cache_creation_input_tokens != null and ($u.cache_read_input_tokens+$u.cache_creation_input_tokens) > $u.input_tokens))
+      then error("cache tokens exceed total input") else . end
+    | if $u.total_tokens != null and $u.input_tokens != null and $u.output_tokens != null and $u.total_tokens != ($u.input_tokens+$u.output_tokens)
+      then error("inconsistent total usage") else . end
+  ' 2>/dev/null || { echo 'invalid provider response: empty, malformed, duplicate calls, inconsistent stop reason, or invalid token usage' >&2; return 1; }
 }
 
 provider_call() (
@@ -218,7 +226,7 @@ provider_call() (
   if [[ "${entry}" == *.conf ]]; then
     upper="$(printf '%s' "${protocol}" | tr '[:lower:]' '[:upper:]')"
     [[ "${upper}" =~ ^[A-Z_][A-Z0-9_]*$ ]] || { echo 'invalid variant protocol' >&2; return 1; }
-    for field in url max_tokens temperature top_p top_k; do
+    for field in url max_tokens temperature top_p top_k prompt_cache; do
       value="$(_provider_conf "${entry}" "${field}")"
       [[ -n "${value}" ]] || continue
       key="$(printf '%s' "${field}" | tr '[:lower:]' '[:upper:]')"

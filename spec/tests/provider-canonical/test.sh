@@ -56,6 +56,44 @@ for provider in anthropic openai chatgpt; do
     chatgpt) check jq -e '.input[1].encrypted_content=="opaque" and .input[4].call_id=="call1" and .input[4].type=="function_call_output"' "${test_dir}/captured" ;;
   esac
 done
+# Anthropic reports uncached input separately; canonical input includes both
+# cache reads and writes. Missing telemetry stays unknown rather than zero.
+for mode in cold warm zai; do
+  case "$mode" in
+    cold) usage='{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":0,"cache_creation_input_tokens":1000}' ;;
+    warm) usage='{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":1000,"cache_creation_input_tokens":0}' ;;
+    zai) usage='{"input_tokens":7,"output_tokens":3,"cache_read_input_tokens":1000}' ;;
+  esac
+  jq --argjson usage "$usage" '.usage=$usage' "${test_dir}/anthropic" > "${test_dir}/anthropic-$mode"
+  check run_provider anthropic "anthropic-$mode"
+  check jq -e '.usage.input_tokens==1007 and .usage.output_tokens==3 and .usage.total_tokens==1010' "${test_dir}/actual"
+  case "$mode" in
+    cold) check jq -e '.usage.cache_read_input_tokens==0 and .usage.cache_creation_input_tokens==1000' "${test_dir}/actual" ;;
+    warm) check jq -e '.usage.cache_read_input_tokens==1000 and .usage.cache_creation_input_tokens==0' "${test_dir}/actual" ;;
+    zai) check jq -e '.usage.cache_read_input_tokens==1000 and .usage.cache_creation_input_tokens==null' "${test_dir}/actual" ;;
+  esac
+done
+jq '.usage={prompt_tokens:1007,completion_tokens:3,total_tokens:1010,prompt_tokens_details:{cached_tokens:1000,cache_write_tokens:7}}' "${test_dir}/openai" > "${test_dir}/openai-cache"
+check run_provider openai openai-cache
+check jq -e '.usage=={input_tokens:1007,output_tokens:3,total_tokens:1010,cache_read_input_tokens:1000,cache_creation_input_tokens:7}' "${test_dir}/actual"
+# Some compatible Messages endpoints expose OpenAI-named usage. Its prompt
+# token count already includes cached tokens and must not be counted twice.
+jq --slurpfile source "${test_dir}/openai-cache" '.usage=$source[0].usage' "${test_dir}/anthropic" > "${test_dir}/anthropic-openai-usage"
+check run_provider anthropic anthropic-openai-usage
+check jq -e '.usage.input_tokens==1007 and .usage.total_tokens==1010 and .usage.cache_read_input_tokens==1000 and .usage.cache_creation_input_tokens==7' "${test_dir}/actual"
+printf 'data: %s\n\n' "$(jq -cn '{type:"response.completed",response:{status:"completed",output:[{type:"message",role:"assistant",content:[{type:"output_text",text:"hello"}]}],usage:{input_tokens:1007,output_tokens:3,total_tokens:1010,input_tokens_details:{cached_tokens:1000,cache_write_tokens:7}}}}')" > "${test_dir}/chatgpt-cache"
+check run_provider chatgpt chatgpt-cache
+check jq -e '.usage=={input_tokens:1007,output_tokens:3,total_tokens:1010,cache_read_input_tokens:1000,cache_creation_input_tokens:7}' "${test_dir}/actual"
+for provider in anthropic openai; do
+  check run_provider "$provider" "$provider"
+  check jq -e '.usage.input_tokens==null and .usage.output_tokens==null and .usage.total_tokens==null and .usage.cache_read_input_tokens==null and .usage.cache_creation_input_tokens==null' "${test_dir}/actual"
+done
+check run_provider openai openai-tools
+check jq -e '.usage.input_tokens==10 and .usage.output_tokens==3 and .usage.total_tokens==13 and .usage.cache_read_input_tokens==null and .usage.cache_creation_input_tokens==null' "${test_dir}/actual"
+jq '.usage.prompt_tokens_details.cached_tokens=1008' "${test_dir}/openai-cache" > "${test_dir}/openai-excess-cache"
+jq '.usage.prompt_tokens_details.cached_tokens=false' "${test_dir}/openai-cache" > "${test_dir}/openai-invalid-cache"
+jq '.usage.total_tokens=1007' "${test_dir}/openai-cache" > "${test_dir}/openai-invalid-total"
+for fixture in openai-excess-cache openai-invalid-cache openai-invalid-total; do check reject openai "$fixture"; done
 jq '.content += [.content[2]]' "${test_dir}/anthropic-tools" > "${test_dir}/anthropic-duplicate"
 jq '.choices[0].message.tool_calls += [.choices[0].message.tool_calls[0]]' "${test_dir}/openai-tools" > "${test_dir}/openai-duplicate"
 jq '.choices[0].message.tool_calls[0].function.arguments="{broken"' "${test_dir}/openai-tools" > "${test_dir}/openai-malformed"
@@ -103,6 +141,29 @@ check jq -e '.messages[0].content[1].cache_control==null and .messages[0].conten
 check jq -e -s '.[0].messages[0].content[1].text==.[1].messages[0].content[1].text' "${test_dir}/view-7" "${test_dir}/view-8"
 check env ANTHROPIC_API_URL=https://example.invalid/messages RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/view-request" > "${test_dir}/actual"
 check jq -e '.cache_control==null and (.system|type)=="string" and (.messages[0].content|length)==2 and .messages[0].content[0].cache_control==null' "${CAPTURE}"
+check env ANTHROPIC_API_URL=https://example.invalid/messages ANTHROPIC_PROMPT_CACHE=explicit RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/view-request" > "${test_dir}/actual"
+check jq -e '.cache_control==null and .system[0].cache_control.type=="ephemeral" and .messages[0].content[2].cache_control.type=="ephemeral"' "${CAPTURE}"
+check env ANTHROPIC_PROMPT_CACHE=off RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/view-request" > "${test_dir}/actual"
+check jq -e '.cache_control==null and (.system|type)=="string" and (.messages[0].content|length)==2 and .messages[0].content[0].cache_control==null' "${CAPTURE}"
+# A pre-marked system can fill the four available slots. Automatic caching must
+# not consume a fifth slot. More than four explicit marks fail before transport.
+jq '.system=[range(3)|{type:"text",text:"fixed",cache_control:{type:"ephemeral"}}]' "${test_dir}/view-request" > "${test_dir}/four-marks"
+check env RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/four-marks" > "${test_dir}/actual"
+check jq -e '.cache_control==null and ([.system[],.messages[].content[]]|map(select(.cache_control!=null))|length)==4' "${CAPTURE}"
+jq '.system += [.system[0]]' "${test_dir}/four-marks" > "${test_dir}/five-marks"
+if RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/five-marks" > "${test_dir}/actual" 2> "${test_dir}/stderr"; then echo 'excess cache marks accepted' >&2; exit 1; fi
+check test ! -s "${test_dir}/actual"
+check env ANTHROPIC_PROMPT_CACHE=off RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/five-marks" > "${test_dir}/actual"
+check jq -e '([.system[],.messages[].content[]]|map(select(.cache_control!=null))|length)==0' "${CAPTURE}"
+printf '%s\n' 'protocol=anthropic' 'model=m' 'url=https://example.invalid/messages' 'auth_env=TEST_VARIANT_KEY' 'prompt_cache=explicit' > "${test_dir}/local/providers/cache-experiment.conf"
+old_cache="${ANTHROPIC_PROMPT_CACHE-unset}"
+check env RESPONSE="${test_dir}/anthropic" bash -c 'source "$HARNESS_ROOT/lib/provider.sh"; provider_call cache-experiment ""' < "${test_dir}/view-request" > "${test_dir}/actual"
+check jq -e '.cache_control==null and .system[0].cache_control.type=="ephemeral" and .messages[0].content[2].cache_control.type=="ephemeral"' "${CAPTURE}"
+check test "${ANTHROPIC_PROMPT_CACHE-unset}" = "$old_cache"
+jq -n '{model:"m",system:[{type:"text",text:"fixed",cache_control:{type:"ephemeral"}}],tools:[{name:"fixture",description:"fixture",input_schema:{type:"object",properties:{cache_control:{type:"object"}}},cache_control:{type:"ephemeral"}}],messages:[{role:"user",content:"hi"},{role:"assistant",blocks:[{type:"tool_call",id:"c1",name:"fixture",input:{cache_control:{type:"payload"}}}]},{role:"tool",call_id:"c1",name:"fixture",content:"ok",error:false}]}' > "${test_dir}/cache-data"
+check env ANTHROPIC_PROMPT_CACHE=off RESPONSE="${test_dir}/anthropic" "${repo}/plugins/anthropic/providers/anthropic" < "${test_dir}/cache-data" > "${test_dir}/actual"
+check jq -e '.system[0].cache_control==null and .tools[0].cache_control==null and .tools[0].input_schema.properties.cache_control.type=="object" and .messages[1].content[0].input.cache_control.type=="payload"' "${CAPTURE}"
+check env ANTHROPIC_PROMPT_CACHE=invalid bash -c 'if RESPONSE="$1/anthropic" "$2/plugins/anthropic/providers/anthropic" < "$1/request" > "$1/actual" 2> "$1/stderr"; then exit 1; fi; [[ ! -s "$1/actual" && -s "$1/stderr" ]]' bash "${test_dir}" "${repo}"
 check env CURL_EXIT=28 bash -c 'if RESPONSE="$1/anthropic" "$2/plugins/anthropic/providers/anthropic" < "$1/request" > "$1/actual" 2> "$1/stderr"; then exit 1; fi; [[ ! -s "$1/actual" && -s "$1/stderr" ]]' bash "${test_dir}" "${repo}"
 
 # Serialize OAuth refreshes without holding the credential lock during inference.

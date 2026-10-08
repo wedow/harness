@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+source "${HARNESS_ROOT}/lib/provider.sh"
+id="$1"; queued="$2"; dir="${HARNESS_DATA}/requests/${id}"
+[[ -f "${queued}" ]] || exit 0
+record="${dir}/request.json"; actor="$(jq -r '.actor' "${record}")"
+if [[ ! -f "${dir}/result.json" ]]; then
+  jq -cn --argjson pid "$$" --arg start "$(process_start "$$")" --arg code "${HARNESS_ROOT}" '{pid:$pid,start:$start,code_root:$code}' | atomic_write "${dir}/lease.json"
+  [[ -f "${queued}" ]] || exit 0
+  HARNESS_CWD="$(jq -r --arg actor "${actor}" '.actors[$actor].cwd' "${HARNESS_DATA}/state.json")"; export HARNESS_CWD HARNESS_ACTOR="${actor}"
+  _refresh_sources
+  attempts="$(cat "${dir}/attempts" 2>/dev/null || printf 0)"
+  if jq -c '.payload' "${record}" | provider_call "$(jq -r '.provider' "${record}")" "$(jq -r '.model' "${record}")" >"${dir}/response.tmp" 2>"${dir}/error"; then
+    jq -c --arg id "${id}" '{id:$id,response:.}' "${dir}/response.tmp" | atomic_write "${dir}/result.json"
+  else
+    attempts=$((attempts+1)); printf '%s\n' "${attempts}" | atomic_write "${dir}/attempts"
+    if (( attempts<${HARNESS_REQUEST_ATTEMPTS:-3} )); then sleep "${HARNESS_RETRY_DELAY:-1}"; exit 1; fi
+    tail -c 4000 "${dir}/error" | jq -Rs --arg id "${id}" '{id:$id,error:(if length>0 then . else "provider request failed" end)}' | atomic_write "${dir}/result.json"
+  fi
+fi
+kind=request.completed
+if jq -e 'has("error")' "${dir}/result.json" >/dev/null; then kind=request.failed; fi
+store_emit "${kind}" "${actor}" "$(cat "${dir}/result.json")" "completed-${id}" >/dev/null
+rm -f "${queued}"

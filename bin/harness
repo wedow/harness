@@ -1,210 +1,36 @@
 #!/usr/bin/env bash
-# harness — minimal agent loop. everything else is plugins.
-
-# bash 4+ required (associative arrays, mapfile). Re-exec with a newer bash if needed.
-if (( BASH_VERSINFO[0] < 4 )); then
-  for _bash in /opt/homebrew/bin/bash /usr/local/bin/bash; do
-    [[ -x "$_bash" ]] && exec "$_bash" "$0" "$@"
-  done
-  echo "harness: bash 4+ required (found ${BASH_VERSION}). Install: brew install bash" >&2
-  exit 1
-fi
-
+# Single-chat CLI and independently restartable runtime components.
 set -euo pipefail
+(( BASH_VERSINFO[0]>=4 )) || { printf 'harness: bash 4+ required\n' >&2; exit 1; }
+HARNESS_ROOT="${HARNESS_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+source "${HARNESS_ROOT}/lib/services.sh"
 
-HARNESS_VERSION="0.4.0"
-readonly HARNESS_ROOT="${HARNESS_ROOT:-$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)}"
-# Overridable
-HARNESS_HOME="${HARNESS_HOME:-${HOME}/.harness}"
-# Session store: nearest .harness/sessions/ walking up from CWD
-if [[ -z "${HARNESS_SESSIONS:-}" ]]; then
-  HARNESS_SESSIONS="${HARNESS_HOME}/sessions"
-  _cur="${PWD}"
-  while [[ "${_cur}" != "/" ]]; do
-    [[ -d "${_cur}/.harness/sessions" ]] && { HARNESS_SESSIONS="${_cur}/.harness/sessions"; break; }
-    _cur="$(dirname "${_cur}")"
-  done; unset _cur
-fi
-HARNESS_MODEL="${HARNESS_MODEL:-}"
-HARNESS_PROVIDER="${HARNESS_PROVIDER:-}"
-HARNESS_LOG="${HARNESS_LOG:-/dev/stderr}"
-HARNESS_RUN_ID="${HARNESS_RUN_ID:-$(date +%s)-$$-${RANDOM}}"
-
-# Export early — hooks run as subprocesses and need these
-export HARNESS_VERSION HARNESS_ROOT HARNESS_HOME HARNESS_SESSIONS HARNESS_MODEL HARNESS_PROVIDER HARNESS_LOG HARNESS_RUN_ID
-
-# --------------------------------------------------------------------------- #
-#  Source discovery                                                            #
-# --------------------------------------------------------------------------- #
-
-_HARNESS_SOURCES=()
-
-# Bootstrap with bundled plugins + HARNESS_HOME, then run hookable sources stage.
-_refresh_sources() {
-  _HARNESS_SOURCES=()
-  local d
-  for d in "${HARNESS_ROOT}/plugins"/*/; do
-    [[ -d "${d}" ]] && _HARNESS_SOURCES+=("${d%/}")
-  done
-  [[ -d "${HARNESS_HOME}" ]] && _HARNESS_SOURCES+=("${HARNESS_HOME}")
-  local result
-  result="$(echo '{}' | call sources)" || return
-  mapfile -t _HARNESS_SOURCES < <(echo "${result}" | jq -r '.sources[]')
-  local IFS=':'; export HARNESS_SOURCES="${_HARNESS_SOURCES[*]}"
-}
-
-# --------------------------------------------------------------------------- #
-#  Hook runner                                                                 #
-# --------------------------------------------------------------------------- #
-# Hooks are executables in hooks.d/<stage>/ directories. They are collected
-# from all sources (local overrides global by basename), sorted by numeric
-# prefix, and run as a pipeline: each hook's stdout feeds the next hook's
-# stdin. Non-zero exit aborts the chain.
-
-call() {
-  local stage="$1"; shift
-
-  # Collect hooks: last source wins per basename (local overrides global)
-  declare -A hook_map=()
-  local src f
-  for src in "${_HARNESS_SOURCES[@]}"; do
-    [[ -d "${src}/hooks.d/${stage}" ]] || continue
-    for f in "${src}/hooks.d/${stage}"/*; do
-      [[ -x "${f}" ]] && hook_map["$(basename "${f}")"]="${f}"
-    done
-  done
-
-  local current=""; [[ ! -t 0 ]] && current="$(cat)"
-  (( ${#hook_map[@]} )) || { printf '%s' "${current}"; return 0; }
-
-  export HARNESS_SESSION="${SESSION_DIR:-}" HARNESS_STAGE="${stage}"
-
-  # Sort by basename (numeric prefix gives order), execute as pipeline.
-  # Each hook's stderr is captured to a temp file (forwarded to HARNESS_LOG) so
-  # that on failure we can surface the real cause inline rather than pointing
-  # the operator at a separate log file (BUG-6).
-  local base rc stderr_tail err_msg
-  local err_tmp; err_tmp="$(mktemp)"
-  while IFS= read -r base; do
-    : > "${err_tmp}"
-    rc=0
-    current="$(echo "${current}" | "${hook_map[$base]}" "$@" 2>"${err_tmp}")" || rc=$?
-    cat "${err_tmp}" >> "${HARNESS_LOG}" 2>/dev/null || true
-    if (( rc != 0 )); then
-      _log "hook ${hook_map[$base]} exited ${rc} during ${stage}"
-      if echo "${current}" | jq -e '.error // empty' >/dev/null 2>&1; then
-        rm -f "${err_tmp}"
-        printf '%s' "${current}"
-        return ${rc}
-      fi
-      stderr_tail="$(tail -n 2 "${err_tmp}" 2>/dev/null)"
-      err_msg="hook ${hook_map[$base]} exited ${rc} during ${stage}"
-      [[ -n "${stderr_tail}" ]] && err_msg="${err_msg}: ${stderr_tail}"
-      rm -f "${err_tmp}"
-      # --rawfile on a process substitution (printf is a builtin) so a hook
-      # whose last stderr line exceeds MAX_ARG_STRLEN can't defeat this surfacing.
-      jq -c -n --rawfile m <(printf '%s' "${err_msg}") '{error: $m}'
-      return ${rc}
-    fi
-  done < <(printf '%s\n' "${!hook_map[@]}" | sort)
-
-  rm -f "${err_tmp}"
-  printf '%s' "${current}"
-}
-
-# --------------------------------------------------------------------------- #
-#  Main agent loop — pure state follower                                      #
-# --------------------------------------------------------------------------- #
-agent_loop() {
-  local session_dir="$1"
-  export SESSION_DIR="${session_dir}"
-  trap 'printf "%s\n" "{\"type\":\"done\"}" >> "${SESSION_DIR}/.stream" 2>/dev/null' EXIT
-  local state="start" context='{}' result="" rc=0 errored=0
-
-  while [[ -n "${state}" ]]; do
-    _refresh_sources
-    result="$(echo "${context}" | call "${state}")" && rc=0 || rc=$?
-
-    if (( rc != 0 )); then
-      errored=1
-      [[ "${state}" == "error" ]] && break
-      state="error"; context="${result}"; continue
-    fi
-
-    # Assemblers report the user files they actually read. A web writer can
-    # reserve a lower sequence and publish it after a higher one was read, so
-    # the follower must check exact files rather than only the highest seq.
-    if [[ "${state}" == assemble ]]; then
-      if echo "${result}" | jq -e '._assembled_user_seqs | type == "array"' >/dev/null 2>&1; then
-        echo "${result}" | jq -r '._assembled_user_seqs[]' > "${session_dir}/.assembled_user_seqs.tmp.$$"
-        mv "${session_dir}/.assembled_user_seqs.tmp.$$" "${session_dir}/.assembled_user_seqs"
-      fi
-    fi
-
-    state="$(echo "${result}" | jq -r '.next_state // empty' 2>/dev/null)" || true
-    context="$(echo "${result}" | jq -c 'del(.next_state)' 2>/dev/null)" || context='{}'
-  done
-
-  local output; output="$(echo "${result:-}" | jq -r '.output // empty' 2>/dev/null)" || true
-  [[ -n "${output}" ]] && printf '%s\n' "${output}"
-  # Non-zero when the loop ended in the error state — commands (agent/stream)
-  # propagate it so callers (agent tool panes) see failure, not a silent 0.
-  return "${errored}"
-}
-
-# --------------------------------------------------------------------------- #
-#  Utilities                                                                   #
-# --------------------------------------------------------------------------- #
-_log() { echo "[harness] $*" >> "${HARNESS_LOG}"; }
-_die() { echo "harness: $*" >&2; exit 1; }
-
-# --------------------------------------------------------------------------- #
-#  Command discovery                                                           #
-# --------------------------------------------------------------------------- #
-# Commands are executables in commands/ directories within plugin sources.
-# Protocol: --describe returns one-line help text; otherwise executed with args.
-# Discovery follows the same source walk as tools/hooks: local overrides global.
-
-_find_command() {
-  local target="$1" result="" src
-  for src in "${_HARNESS_SOURCES[@]}"; do
-    [[ -x "${src}/commands/${target}" ]] && result="${src}/commands/${target}"
-  done
-  echo "${result}"
-}
-
-# --------------------------------------------------------------------------- #
-#  CLI                                                                         #
-# --------------------------------------------------------------------------- #
 main() {
-  command -v jq &>/dev/null || _die "required: jq"
-  command -v curl &>/dev/null || _die "required: curl"
-  mkdir -p "${HARNESS_HOME}" "${HARNESS_SESSIONS}"
-  _refresh_sources
-
-  local cmd="${1:-agent}"
-  case "${cmd}" in --help|-h) cmd="help" ;; --version|-v) cmd="version" ;; esac
-
-  # Interactive TTY with no message → REPL instead of agent
-  if [[ -t 0 ]]; then
-    if [[ $# -eq 0 ]]; then
-      cmd="repl"
-    elif [[ $# -eq 1 ]] && [[ -d "${HARNESS_SESSIONS}/${1}" ]]; then
-      cmd="repl"; set -- repl "$@"
-    fi
-  fi
-
-  local cmd_path="$(_find_command "${cmd}")"
-  if [[ -n "${cmd_path}" ]]; then
-    shift || true
-  else
-    cmd_path="$(_find_command "agent")" || true
-    [[ -n "${cmd_path}" ]] || _die "no agent command found"
-  fi
-  exec "${cmd_path}" "$@"
+  local cmd="${1:-start}" binary
+  [[ $# -eq 0 ]] || shift
+  command -v jq >/dev/null || _die 'required: jq'
+  command -v flock >/dev/null || _die 'required: flock (Linux util-linux)'
+  [[ "${HARNESS_WORKERS:-5}" =~ ^[1-9][0-9]*$ ]] || _die 'HARNESS_WORKERS must be a positive integer'
+  store_init; _refresh_sources
+  case "${cmd}" in
+    start) service_start "${1:-all}"; printf 'chat: http://127.0.0.1:%s\n' "${HARNESS_SERVE_PORT:-8080}" ;;
+    stop) service_stop "${1:-all}" ;;
+    restart) service_stop "${1:-all}"; service_start "${1:-all}" ;;
+    serve) exec "${HARNESS_ROOT}/lib/component" web "${HARNESS_ROOT}/plugins/web/commands/serve" "$@" ;;
+    reactor) exec "${HARNESS_ROOT}/lib/component" reactor "${HARNESS_ROOT}/lib/reactor" ;;
+    worker) exec "${HARNESS_ROOT}/lib/component" "worker-${1:-1}" "${HARNESS_ROOT}/lib/worker" "${1:-1}" ;;
+    submit) if (( $# )); then store_submit "$*"; else store_submit "$(cat)"; fi ;;
+    cancel) store_cancel main ;;
+    history) store_feed 0 0 "${1:-100}" ;;
+    status) store_status ;;
+    tools) harness_tools ;;
+    version|--version|-v) printf 'harness %s\n' "${HARNESS_VERSION}" ;;
+    help|--help|-h)
+      printf '%s\n' 'harness start|stop|restart [all|web|reactor|worker-N]' 'harness serve [port] | reactor | worker [N]' 'harness submit [message] | history [limit] | status | cancel' 'harness tools | auth | version'
+      ;;
+    *) binary="$(harness_find commands "${cmd}")" || _die "unknown command: ${cmd}"; exec "${binary}" "$@" ;;
+  esac
 }
-
-# Only run main when executed directly, not when sourced
-if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
-  main "$@"
-fi
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then main "$@"; fi

@@ -1,119 +1,33 @@
 #!/usr/bin/env bash
-# bash — tool plugin: execute a bash command and return stdout+stderr.
 set -euo pipefail
-
 case "${1:-}" in
   --schema)
     cat <<'JSON'
-{
-  "name": "bash",
-  "description": "Execute a bash command in the working directory. Returns JSON {exit, elapsed_s, timeout_s, timed_out, stdout, stderr} — check elapsed_s to notice surprisingly slow commands. Use for running scripts, installing packages, file operations, or any shell command.",
-  "input_schema": {
-    "type": "object",
-    "properties": {
-      "command": {
-        "type": "string",
-        "description": "The bash command to execute"
-      },
-      "timeout": {
-        "type": "integer",
-        "description": "Timeout in seconds (default 120). On expiry the whole command process group is killed"
-      },
-      "intent": {
-        "type": "string",
-        "description": "Optional. Short phrase describing what this call is trying to accomplish, phrased for a human skimming the transcript. Ignored by the tool itself; UIs show it as the collapsed summary over this call's result."
-      }
-    },
-    "required": ["command"]
-  }
-}
+{"name":"bash","description":"Run a Bash command in the working directory as a background job. Its observation contains JSON {exit,elapsed_s,timed_out,stdout,stderr}.","input_schema":{"type":"object","properties":{"command":{"type":"string"},"timeout":{"type":"integer","minimum":1,"maximum":600,"description":"Seconds, default 120."},"intent":{"type":"string","description":"Short explanation for the user."}},"required":["command"]}}
 JSON
     ;;
-  --describe)
-    echo "Execute bash commands"
-    ;;
+  --describe) printf 'Execute bash commands\n' ;;
   --exec)
+    source "${HARNESS_ROOT}/lib/bootstrap.sh"
     input="$(cat)"
-    command="$(echo "${input}" | jq -r '.command')"
-    tool_timeout="$(echo "${input}" | jq -r '.timeout // empty')"
-    # Run in the session's original cwd if available
-    cwd="${HARNESS_CWD:-${PWD}}"
-    cd "${cwd}" 2>/dev/null || true
-    # Resolve real bash before modifying PATH (tool-bin/ may shadow 'bash')
-    _bash="$(type -P bash)"
-    # Put discovered tools on PATH so scripts can invoke them by name (incl.
-    # recursive `agent` calls). Build a filtered symlink dir from HARNESS_SOURCES,
-    # rebuilt per call so it tracks runtime plugin changes. 'bash' is excluded so
-    # nested shell calls hit the real bash; later sources win, matching tool_exec.
-    if [[ -n "${HARNESS_SOURCES:-}" ]]; then
-      tool_bin="${HARNESS_SESSION:-$(mktemp -d)}/.tool-bin"
-      mkdir -p "${tool_bin}"
-      IFS=':' read -ra _srcs <<< "${HARNESS_SOURCES}"
-      for _s in "${_srcs[@]}"; do
-        [[ -d "${_s}/tools" ]] || continue
-        for _f in "${_s}/tools"/*; do
-          [[ -x "${_f}" ]] || continue
-          _n="$(basename "${_f}")"
-          [[ "${_n}" == "bash" ]] && continue
-          ln -sf "$(realpath "${_f}")" "${tool_bin}/${_n}"
-        done
-      done
-      export PATH="${tool_bin}:${PATH}"
-    fi
-    # Execute with a timeout, capturing stdout and stderr separately. The
-    # command runs in its own process group (setsid) and the WHOLE group is
-    # killed on expiry: signaling only the direct bash child leaves
-    # grandchildren (e.g. a hung test binary under `make`) alive holding
-    # output pipes open, hanging the tool call far past its own timeout.
-    # Result is JSON (exit, elapsed_s, timeout_s, timed_out, stdout, stderr)
-    # so the model sees exactly how long its command took.
-    _timeout="${tool_timeout:-${HARNESS_TOOL_TIMEOUT:-120}}"
-    _out="$(mktemp)"; _err="$(mktemp)"; _killed="$(mktemp -u)"
-    _t0="$(date +%s.%N)"
-    _rc=0
-    if command -v setsid &>/dev/null; then
-      setsid --wait "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" & _pid=$!
-      # Watchdog output silenced: an orphaned inner sleep must never
-      # inherit (and hold open) this tool's stdout pipe. Ticks instead of
-      # sleeping out the whole timeout: if the tool process itself dies
-      # (killed agent turn), the watchdog exits within a tick instead of
-      # living out a day-scale agent-specified timeout.
-      ( _t=0
-        while (( _t < _timeout )) && kill -0 "${PPID}" 2>/dev/null; do
-          sleep 1; _t=$(( _t + 1 ))
-        done
-        if kill -0 "${PPID}" 2>/dev/null; then
-          touch "${_killed}"
-          kill -TERM -- "-${_pid}" 2>/dev/null; sleep 5
-          kill -KILL -- "-${_pid}" 2>/dev/null
-        fi
-      ) >/dev/null 2>&1 & _wd=$!
-      wait "${_pid}" 2>/dev/null || _rc=$?
-      kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
-    elif command -v timeout &>/dev/null; then
-      timeout "${_timeout}" "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" || _rc=$?
+    printf '%s' "${input}" | jq -e '(.command|type)=="string" and (.command|length)>0 and ((.timeout // 120)|type)=="number" and ((.timeout // 120)|floor)==(.timeout // 120) and (.timeout // 120)>=1 and (.timeout // 120)<=600' >/dev/null || exit 1
+    command="$(printf '%s' "${input}" | jq -r '.command')"; seconds="$(printf '%s' "${input}" | jq -r '.timeout // 120')"
+    cd "${HARNESS_CWD:-${PWD}}"
+    temp="$(mktemp -d)"; child=""
+    trap 'trap "" TERM INT; if [[ -n "${child}" ]]; then terminate_group "${child}"; wait "${child}" 2>/dev/null || true; fi; rm -rf "${temp}"' EXIT
+    trap 'trap "" TERM INT; exit 143' TERM INT
+    started="$(date +%s.%N)"; rc=0
+    if [[ "${HARNESS_JOB_MANAGED:-}" == 1 ]]; then
+      # The job runner already owns and bounds this entire process group.
+      bash -c "${command}" >"${temp}/stdout" 2>"${temp}/stderr" || rc=$?
     else
-      # macOS fallback: background + watchdog kill (no GNU timeout, no setsid)
-      "${_bash}" -c "${command}" >"${_out}" 2>"${_err}" & _pid=$!
-      ( _t=0
-        while (( _t < _timeout )) && kill -0 "${PPID}" 2>/dev/null; do
-          sleep 1; _t=$(( _t + 1 ))
-        done
-        if kill -0 "${PPID}" 2>/dev/null; then kill "${_pid}" 2>/dev/null; fi
-      ) & _wd=$!
-      wait "${_pid}" 2>/dev/null || _rc=$?
-      kill "${_wd}" 2>/dev/null || true; wait "${_wd}" 2>/dev/null || true
+      setsid timeout --kill-after=5 "${seconds}" bash -c "${command}" >"${temp}/stdout" 2>"${temp}/stderr" & child=$!
+      wait "${child}" || rc=$?
+      terminate_group "${child}"; child=""
     fi
-    _elapsed="$(awk -v a="${_t0}" -v b="$(date +%s.%N)" 'BEGIN{printf "%.2f", b-a}')"
-    if [[ -e "${_killed}" ]]; then _timed=true; else _timed=false; fi
-    jq -n --argjson rc "${_rc}" --argjson elapsed "${_elapsed}" \
-      --argjson tmo "${_timeout}" --argjson timed "${_timed}" \
-      --rawfile out "${_out}" --rawfile err "${_err}" \
-      '{exit: $rc, elapsed_s: $elapsed, timeout_s: $tmo, timed_out: $timed, stdout: $out, stderr: $err}'
-    rm -f "${_out}" "${_err}" "${_killed}"
+    elapsed="$(awk -v a="${started}" -v b="$(date +%s.%N)" 'BEGIN {printf "%.2f",b-a}')"
+    jq -cn --argjson rc "${rc}" --argjson elapsed "${elapsed}" --argjson timeout "${seconds}" --rawfile out "${temp}/stdout" --rawfile err "${temp}/stderr" '{exit:$rc,elapsed_s:$elapsed,timeout_s:$timeout,timed_out:($rc==124 or $rc==137),stdout:$out,stderr:$err}'
+    (( rc==0 ))
     ;;
-  *)
-    echo "usage: bash --schema | --describe | --exec" >&2
-    exit 1
-    ;;
+  *) exit 1 ;;
 esac

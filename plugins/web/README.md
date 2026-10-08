@@ -1,92 +1,47 @@
-# web plugin
+# Web frontend
 
-Server-rendered web UI for harness sessions over socat. No build step, no
-node; the only asset is the vendored `public/datastar.js` (v1.0.2).
+`harness serve [port]` serves the one continuous chat on
+`http://127.0.0.1:8080`. It requires `socat` and runs independently of the
+reactor and workers. Closing a browser or restarting the HTTP server does
+not stop an agent task.
 
-    serve              entry point; requires socat, binds 127.0.0.1:$PORT (default 8080)
-    lib/handler        per-connection HTTP entry; stdin/stdout is the socket
-    lib/http.sh        HTTP/SSE primitives, html escaping
-    lib/pages.sh       routes, layout, transcript renderer, SSE hub
+The browser polls committed messages every 1.5 seconds. It reconnects
+automatically, preserves the draft, and retries unacknowledged submissions
+with the same message ID so a lost response cannot duplicate a message.
+Earlier history loads in pages. Replies appear whole when committed;
+there is no token stream or session selector.
 
-## Reverse proxies and allowed origins
+`lib/handler` handles one request per socat connection. `lib/http.sh`
+frames responses with byte lengths and optional gzip. The standalone
+HTML, JavaScript, and CSS live in `public/`; no build step is needed.
 
-The listener stays on `127.0.0.1`. Requests normally need a loopback
-`Host`, and browser POSTs need a matching `http://` Origin. To serve it at a
-Tailscale or other HTTPS proxy address, set the exact public origin before
-starting `harness serve`:
+| Endpoint | Behavior |
+| --- | --- |
+| `GET /` | Chat page |
+| `GET /api/events?after=N&limit=N` | Committed events after a cursor; cursor zero loads the newest page |
+| `GET /api/events?before=N&limit=N` | Earlier history in chronological order |
+| `GET /api/status` | Actor, request, job, and component activity |
+| `POST /api/messages` | Save JSON `{text,id}`; repeated IDs deduplicate |
+| `POST /api/cancel` | Request cancellation of the current main task |
+
+Page sizes range from 1 to 200. Request bodies are limited to 1 MiB.
+The frontend uses `HARNESS_DATA` through the shared store and never opens
+the old session directory.
+
+## Reverse proxies
+
+The listener stays on loopback. Requests require a loopback Host or an
+explicitly allowed proxy Host. Browser POSTs require a matching local
+Origin or an explicitly trusted public Origin:
 
 ```bash
 export HARNESS_WEB_ALLOWED_ORIGINS='https://agent.example-tailnet.ts.net'
-bin/harness serve
+harness serve
 ```
 
-An allowed origin also allows its hostname in `Host`, whether the proxy
-preserves that header or rewrites it to loopback. If a proxy uses another
-`Host` value, add it with `HARNESS_WEB_ALLOWED_HOSTS`, for example
-`HARNESS_WEB_ALLOWED_HOSTS=proxy.internal:8080`. Multiple entries in either
-variable may be separated by commas or spaces. Entries are exact, including
-scheme and port for origins and port for hosts; wildcards are not supported.
-Restart the server after changing these variables.
-
-## Model
-
-- socat forks one `handler` bash process per connection.
-- Routing (after query-string strip): `GET /`, `GET /datastar.js`,
-  `GET /s/<id>`, `GET /s/<id>/events`, `POST /new`, `POST /s/<id>`.
-- Pages are fully server-rendered. Datastar (loaded as a module from
-  `/datastar.js`) only morphs fragments we push over SSE and runs small
-  attribute expressions (`data-init`, `data-on:*`).
-- `POST /new` with an empty message creates a session without launching an
-  agent (the sidebar `+` button). With a message it creates and runs.
-- Agents are launched backgrounded under a per-session `flock`
-  (`$SESSION/.lock`), one in-flight turn per session, entirely independent
-  of HTTP connections. The UI is an agent multiplexer.
-
-## SSE hub (`GET /s/<id>/events`)
-
-Each connection is a long-lived handler process that pushes:
-
-1. **Transcript patches** — message file changes send changed message
-   elements. Existing messages morph by id; new messages append inside
-   `#transcript`. Removed or mid-inserted files and turn boundaries trigger
-   a full transcript render.
-2. **Live UI reload** — changes to this plugin's own files push a hidden
-   `<div id="uireload" data-init="location.reload()">`; every open tab
-   hard-reloads and picks up new markup/CSS. Editing the plugin is hot.
-3. **Heartbeat** — every ~15s a hidden `<div id="hb" data-t="...">` morph.
-   The client watchdog reloads if beats stop for 45s (server death etc).
-4. **Agent-running spinners** — every ~2s the hub probes each session `.lock` with `fuser` (open-fd check, no locking — an `flock -n` probe could steal the lock and drop a queued turn) and morphs `#agent-status` plus every sidebar spinner. The lock is held open for the agent subshell's whole lifetime, so "lock open" == "turn in flight".
-4. **Agent channel** — lines written to `$SESSION/.ui/*.fifo` are wrapped
-   as append-mode patch events. One fifo per connection, created on
-   connect, removed on disconnect. See `prompt.md`.
-
-The client fetch uses `{retry: 'always', retryMaxCount: 99999,
-openWhenHidden: true}` so clean server EOFs and idle tabs reconnect on
-their own; each (re)connect sends an immediate full render, so reconnect
-means resync.
-
-## Layout
-
-- Collapsible session sidebar (hamburger on mobile <900px, pinned on
-  desktop) with new-session form and recent sessions; current highlighted.
-- Transcript scrolls in its own viewport-height container; the reply form
-  is sticky at the bottom.
-- Autoscroll only while the user is at the bottom (sticky-flag logic);
-  a floating ↓ button appears when scrolled up.
-- Draft persistence: the reply input syncs to
-  `localStorage["draft:<path>"]`, restored on load (with focus), cleared
-  on submit. Reloads — including live-UI reloads mid-typing — are near
-  seamless.
-
-## Gotchas learned the hard way
-
-- socat execs children with SIGPIPE ignored; an ignored signal cannot be
-  re-trapped in bash, so dead-socket detection is via printf's nonzero
-  return on EPIPE (`sse_patch ... || exit 0`).
-- Datastar's default outer mode only patches ids that already exist;
-  brand-new elements need `selector body` + `mode append` (`sse_patch
-  <frag> append`).
-- Datastar `retry` defaults to `'auto'`, which never retries a clean
-  stream EOF — only network errors. Use `retry: 'always'`.
-- Everything runs over localhost; message changes use small patches, with
-  full transcript resyncs at turn boundaries.
+An allowed Origin also permits its hostname as Host, including proxies
+that rewrite Host to loopback. Additional exact Hosts can be configured
+with `HARNESS_WEB_ALLOWED_HOSTS=proxy.internal:8080`. Both variables accept
+comma- or space-separated entries. Origins include the scheme and port;
+Hosts include any port. Wildcards are not supported. Restart the HTTP
+server after changing these settings.

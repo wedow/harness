@@ -5,6 +5,7 @@ set -euo pipefail
 case "${1:-}" in --describe) echo "manage provider credentials"; exit 0 ;; esac
 
 source "${HARNESS_ROOT}/bin/harness"
+source "${HARNESS_ROOT}/lib/provider.sh"
 
 _auth_file() {
   if [[ "${1:-}" == "--local" ]]; then
@@ -42,12 +43,15 @@ case "${subcmd}" in
     echo "${cred}" | jq -e '.' >/dev/null 2>&1 || _die "invalid credential from auth-set hooks"
 
     auth_file="$(_auth_file "${local_flag}")"
+    mkdir -p "$(dirname "${auth_file}")" "${HARNESS_HOME}"
+    _provider_auth_lock
     existing="$(_read_auth "${auth_file}")"
     updated="$(printf '%s\n%s' "${existing}" "${cred}" \
       | jq -s --arg p "${provider}" '.[1] as $c | .[0] | .[$p] = [$c]')"
-    mkdir -p "$(dirname "${auth_file}")"
     _tmp="$(mktemp "${auth_file}.XXXXXX")"
     echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
+    _provider_auth_unlock
+    harness_auth_refresh
     echo "saved credential for ${provider}" >&2
     ;;
 
@@ -60,14 +64,12 @@ case "${subcmd}" in
     if [[ -n "${provider}" ]]; then
       jq -r --arg p "${provider}" '
         (.[$p] // []) | to_entries[] |
-        "  [\(.key)] type=\(.value.type // "unknown") key=\(.value.key // .value.token // "?" |
-          if length > 8 then .[:4] + "..." + .[-4:] else "****" end)"
+        "  [\(.key)] type=\(.value.type // "unknown")"
       ' "${cache}"
     else
       jq -r '
         to_entries[] | .key as $p | (.value // []) | to_entries[] |
-        "\($p) [\(.key)] type=\(.value.type // "unknown") key=\(.value.key // .value.token // "?" |
-          if length > 8 then .[:4] + "..." + .[-4:] else "****" end)"
+        "\($p) [\(.key)] type=\(.value.type // "unknown")"
       ' "${cache}"
     fi
     ;;
@@ -81,9 +83,12 @@ case "${subcmd}" in
 
     auth_file="$(_auth_file "${local_flag}")"
     [[ -f "${auth_file}" ]] || _die "no auth file at ${auth_file}"
+    _provider_auth_lock
     updated="$(jq --arg p "${provider}" --argjson i "${index}" 'del(.[$p][$i])' "${auth_file}")"
     _tmp="$(mktemp "${auth_file}.XXXXXX")"
-    echo "${updated}" > "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
+    echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${auth_file}"
+    _provider_auth_unlock
+    harness_auth_refresh
     echo "removed ${provider}[${index}]" >&2
     ;;
 

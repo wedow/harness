@@ -164,8 +164,8 @@ After=${TSNET_UNIT}.service
 WorkingDirectory=${HARNESS_HOME}/workspace
 Environment=HARNESS_ROOT=${HARNESS_ROOT}
 Environment=HARNESS_HOME=${HARNESS_HOME}
-Environment=HARNESS_SESSIONS=${HARNESS_SESSIONS}
-ExecStart=${HARNESS_ROOT}/plugins/web/commands/serve ${BACKEND#*:}
+Environment=HARNESS_DATA=${HARNESS_DATA}
+ExecStart=${HARNESS_ROOT}/bin/harness serve ${BACKEND#*:}
 Restart=on-failure
 
 [Install]

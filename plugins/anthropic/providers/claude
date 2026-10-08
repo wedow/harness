@@ -7,8 +7,10 @@ set -euo pipefail
   cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
   [[ -f "${cache}" ]] || exit 1
   jq -e '.claude | length > 0' "${cache}" &>/dev/null || exit 1
+  jq -e '.claude[0].access_token | type == "string" and length > 0' "${cache}" >/dev/null || exit 1
   exp="$(jq -r '.claude[0].expires_at // "0"' "${cache}")"
-  [[ "${exp}" == "0" ]] || [[ "$(date +%s)" -lt "${exp}" ]]
+  refresh="$(jq -r '.claude[0].refresh_token // empty' "${cache}")"
+  [[ -n "${refresh}" || "${exp}" == "0" ]] || [[ "$(date +%s)" -lt "${exp}" ]]
   exit $?
 }
 [[ "${1:-}" == "--defaults" ]] && { echo "model=claude-sonnet-4-6"; exit 0; }
@@ -17,11 +19,12 @@ ANTHROPIC_MAX_TOKENS  max response tokens (64000)
 ENVEOF
 exit 0; }
 
-# --stream is passed through to the anthropic provider
-[[ "${1:-}" == "--stream" ]] && { _stream="--stream"; shift; } || _stream=""
+[[ $# == 0 ]] || { echo 'unsupported provider option' >&2; exit 1; }
+source "${HARNESS_ROOT:-$(cd "$(dirname "$0")/../../.." >/dev/null && pwd)}/lib/provider.sh"
 
 cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
 [[ -f "${cache}" ]] || { echo "no auth cache — run: hs auth set claude" >&2; exit 1; }
+_provider_auth_lock
 
 # Read credentials
 access_token="$(jq -r '.claude[0].access_token // empty' "${cache}")"
@@ -85,34 +88,21 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
   echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${cache}"
   echo "refreshed claude token" >&2
 fi
+_provider_auth_unlock
 
 # Configure anthropic provider for OAuth
 export ANTHROPIC_AUTH_HEADER="Authorization: Bearer ${access_token}"
 export ANTHROPIC_BETA="claude-code-20250219,oauth-2025-04-20"
 
 # Find the anthropic provider
-IFS=':' read -ra _sources <<< "${HARNESS_SOURCES}"
-_anthropic=""
-for (( _i=${#_sources[@]}-1; _i>=0; _i-- )); do
-  [[ -x "${_sources[_i]}/providers/anthropic" ]] && _anthropic="${_sources[_i]}/providers/anthropic"
-done
+_anthropic="$(_provider_entry anthropic)"
 [[ -z "${_anthropic}" ]] && { echo "anthropic provider not found" >&2; exit 1; }
 
 # Pre-process: system prompt as cached content blocks with identity
-payload="$(cat)"
-system="$(echo "${payload}" | jq -r '.system // ""')"
+payload="$(_provider_validate_request)"
 identity='You are Claude Code, Anthropic'\''s official CLI for Claude.'
-if [[ -n "${system}" ]]; then
-  system_blocks="$(printf '%s' "${system}" | jq -Rs --arg identity "${identity}" \
-    '[{type: "text", text: $identity, cache_control: {type: "ephemeral"}},
-      {type: "text", text: ., cache_control: {type: "ephemeral"}}]'
-  )"
-else
-  system_blocks="$(jq -n \
-    --arg identity "${identity}" \
-    '[{type: "text", text: $identity, cache_control: {type: "ephemeral"}}]'
-  )"
-fi
-payload="$(printf '%s\n%s' "${payload}" "${system_blocks}" | jq -c -s '.[0] + {system: .[1]}')"
-
-echo "${payload}" | "${_anthropic}" ${_stream} "$@"
+printf '%s' "${payload}" | jq -c --arg identity "${identity}" '
+  .system = ([{type:"text",text:$identity,cache_control:{type:"ephemeral"}}]
+    + (if (.system | type) == "array" then .system
+       elif (.system // "" | length) > 0 then [{type:"text",text:.system,cache_control:{type:"ephemeral"}}]
+       else [] end))' | "${_anthropic}"

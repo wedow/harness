@@ -4,8 +4,10 @@
 
 set -euo pipefail
 
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." >/dev/null && pwd)"
 
-for path in AGENTS.md docs LICENSE plugins README.md vendor; do
-    [[ -e "$REPO_ROOT/$path" ]] && printf '%s\n' "$path"
+for path in AGENTS.md docs lib LICENSE plugins README.md vendor; do
+    if [[ -e "$REPO_ROOT/$path" ]]; then
+        printf '%s\n' "$path"
+    fi
 done

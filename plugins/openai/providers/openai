@@ -1,230 +1,73 @@
 #!/usr/bin/env bash
-# openai — provider plugin for OpenAI-compatible chat completions APIs.
-# Works with OpenAI, ollama, llama.cpp, vLLM, and other compatible servers.
-# Receives assembled payload JSON on stdin, outputs the API response.
+# OpenAI-compatible Chat Completions; canonical JSON in and normalized JSON out.
 set -euo pipefail
 
-[[ "${1:-}" == "--describe" ]] && { echo "OpenAI-compatible chat completions API"; exit 0; }
-[[ "${1:-}" == "--ready" ]] && {
+[[ "${1:-}" == --describe ]] && { echo 'OpenAI-compatible chat completions API'; exit 0; }
+[[ "${1:-}" == --ready ]] && {
   [[ -n "${OPENAI_API_KEY:-}" || -n "${OPENAI_API_URL:-}" ]] && exit 0
   cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
-  [[ -f "${cache}" ]] && jq -e '.openai | length > 0' "${cache}" &>/dev/null
+  [[ -f "${cache}" ]] && jq -e '.openai[0].key | type == "string" and length > 0' "${cache}" >/dev/null
   exit $?
 }
-[[ "${1:-}" == "--defaults" ]] && { echo "model=gpt-4o"; exit 0; }
-[[ "${1:-}" == "--env" ]] && { cat <<'ENVEOF'
-OPENAI_API_KEY      API key (required for OpenAI, optional for local servers)
-OPENAI_API_URL      API endpoint (https://api.openai.com/v1/chat/completions)
-OPENAI_MAX_TOKENS   max response tokens (16384)
-ENVEOF
-exit 0; }
+[[ "${1:-}" == --defaults ]] && { echo 'model=gpt-4o'; exit 0; }
+[[ "${1:-}" == --env ]] && {
+  printf '%s\n' 'OPENAI_API_KEY     API key (optional for local servers)' 'OPENAI_API_URL     API endpoint (https://api.openai.com/v1/chat/completions)' 'OPENAI_MAX_TOKENS  max response tokens (16384)'
+  exit 0
+}
+[[ $# == 0 ]] || { echo 'unsupported provider option' >&2; exit 1; }
+source "${HARNESS_ROOT:-$(cd "$(dirname "$0")/../../.." >/dev/null && pwd)}/lib/provider.sh"
 
-streaming=false
-[[ "${1:-}" == "--stream" ]] && { streaming=true; shift; }
-
-OPENAI_API_URL="${OPENAI_API_URL:-https://api.openai.com/v1/chat/completions}"
-OPENAI_MAX_TOKENS="${OPENAI_MAX_TOKENS:-16384}"
-
-payload="$(cat)"
-
-model="$(echo "${payload}" | jq -r '.model // ""')"
-[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
-
-system="$(echo "${payload}" | jq -r '.system // ""')"
-messages="$(echo "${payload}" | jq -c '.messages // []')"
-tools="$(echo "${payload}" | jq -c '.tools // []')"
-
-# Translate tool schemas from canonical (input_schema) to OpenAI format (parameters)
-openai_tools="$(echo "${tools}" | jq -c '[.[] | {
-  type: "function",
-  function: {
-    name: .name,
-    description: .description,
-    parameters: .input_schema
-  }
-}]')"
-
-# Build messages with system message prepended
-openai_messages="$(printf '%s\n%s' "${messages}" "$(printf '%s' "${system}" | jq -Rs '.')" | jq -c -s \
-  'if (.[1] | length) > 0
-   then [{role: "system", content: .[1]}] + .[0]
-   else .[0] end'
-)"
-
-# Build the request body
-request="$(printf '%s\n%s' "${openai_messages}" "${openai_tools}" | jq -c -s \
-  --arg model "${model}" \
-  --argjson max_tokens "${OPENAI_MAX_TOKENS}" \
-  '.[0] as $msgs | .[1] as $tools |
-   {model: $model, max_tokens: $max_tokens, messages: $msgs}
-   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
-)"
-
-# Add reasoning_effort if HARNESS_THINKING is set
-if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != "off" ]]; then
-  _re="${HARNESS_THINKING}"
-  [[ "${_re}" == "max" ]] && _re="high"
-  request="$(echo "${request}" | jq -c --arg re "${_re}" '. + {reasoning_effort: $re}')"
+payload="$(_provider_validate_request)"
+request="$(printf '%s' "${payload}" | jq -ce --arg model "${HARNESS_MODEL:-}" --argjson budget "${OPENAI_MAX_TOKENS:-16384}" '
+  def assistant_message:
+    if .provider_state.protocol == "openai" then
+      if .provider_state.message.role == "assistant" then .provider_state.message else error("invalid native continuation") end
+    else {role:"assistant",content:([.blocks[] | select(.type == "text") | .text] | join("")),
+      tool_calls:[.blocks[] | select(.type == "tool_call") |
+        {id:.id,type:"function",function:{name:.name,arguments:(.input|tojson)}}]}
+      | if (.tool_calls|length) == 0 then del(.tool_calls) else . end end;
+  . as $p
+  | {model:(.model // $model),max_tokens:$budget,messages:
+    ((if (.system // "" | length) > 0 then [{role:"system",content:.system}] else [] end)
+     + [.messages[] | if .role == "user" then {role:"user",content:.content}
+       elif .role == "tool" then {role:"tool",tool_call_id:.call_id,content:.content}
+       else assistant_message end])}
+  | if ($p.tools // [] | length) > 0 then .tools=[$p.tools[] |
+      {type:"function",function:{name:.name,description:.description,parameters:.input_schema}}] else . end
+  ' 2>/dev/null)" || { echo 'invalid OpenAI message continuation' >&2; exit 1; }
+if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != off ]]; then
+  effort="${HARNESS_THINKING}"
+  [[ "${effort}" != max ]] || effort=high
+  request="$(printf '%s' "${request}" | jq -c --arg effort "${effort}" '.reasoning_effort=$effort')"
 fi
-
-# Auth: env var wins, then auth cache, then no auth (local servers)
-if [[ -z "${OPENAI_API_KEY:-}" ]]; then
-  cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
-  [[ -f "${cache}" ]] && OPENAI_API_KEY="$(jq -r '.openai[0].key // empty' "${cache}")"
-fi
-auth_args=()
-if [[ -n "${OPENAI_API_KEY:-}" ]]; then
-  auth_args=(-H "Authorization: Bearer ${OPENAI_API_KEY}")
-fi
-
-if [[ "${streaming}" == true ]]; then
-  # Add stream options to request
-  request="$(echo "${request}" | jq -c '. + {stream: true, stream_options: {include_usage: true}}')"
-
-  # Accumulators
-  resp_id="" resp_model="" text_content="" finish_reason=""
-  prompt_tokens=0 completion_tokens=0 total_tokens=0
-  non_sse_body=""
-  declare -A tc_ids=() tc_names=() tc_args=()
-
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    # Strip trailing carriage return
-    line="${line%$'\r'}"
-
-    # Skip empty lines and non-data lines
-    if [[ "${line}" != data:* ]]; then
-      [[ -n "${line}" ]] && non_sse_body+="${line}"$'\n'
-      continue
-    fi
-    data="${line#data: }"
-    [[ "${data}" == "[DONE]" ]] && break
-
-    # Parse chunk fields
-    [[ -z "${resp_id}" ]] && resp_id="$(echo "${data}" | jq -r '.id // empty')"
-    [[ -z "${resp_model}" ]] && resp_model="$(echo "${data}" | jq -r '.model // empty')"
-
-    # Content delta (sentinel trick preserves trailing newlines from $())
-    delta_content="$(echo "${data}" | jq -j '.choices[0].delta.content // empty'; printf x)"
-    delta_content="${delta_content%x}"
-    if [[ -n "${delta_content}" ]]; then
-      text_content+="${delta_content}"
-      [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${delta_content}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
-    fi
-
-    # Tool call deltas
-    tc_json="$(echo "${data}" | jq -c '.choices[0].delta.tool_calls // empty')"
-    if [[ -n "${tc_json}" && "${tc_json}" != "null" ]]; then
-      tc_count="$(echo "${tc_json}" | jq 'length')"
-      for (( ti=0; ti<tc_count; ti++ )); do
-        tc_idx="$(echo "${tc_json}" | jq -r ".[$ti].index")"
-        tc_id="$(echo "${tc_json}" | jq -r ".[$ti].id // empty")"
-        tc_name="$(echo "${tc_json}" | jq -r ".[$ti].function.name // empty")"
-        tc_arg_chunk="$(echo "${tc_json}" | jq -r ".[$ti].function.arguments // empty")"
-
-        [[ -n "${tc_id}" ]] && tc_ids["${tc_idx}"]="${tc_id}"
-        [[ -n "${tc_name}" ]] && tc_names["${tc_idx}"]="${tc_name}"
-        tc_args["${tc_idx}"]="${tc_args["${tc_idx}"]:-}${tc_arg_chunk}"
-      done
-    fi
-
-    # Finish reason
-    fr="$(echo "${data}" | jq -r '.choices[0].finish_reason // empty')"
-    [[ -n "${fr}" ]] && finish_reason="${fr}"
-
-    # Usage (arrives in the final chunk)
-    usage="$(echo "${data}" | jq -c '.usage // empty')"
-    if [[ -n "${usage}" && "${usage}" != "null" ]]; then
-      prompt_tokens="$(echo "${usage}" | jq -r '.prompt_tokens // 0')"
-      completion_tokens="$(echo "${usage}" | jq -r '.completion_tokens // 0')"
-      total_tokens="$(echo "${usage}" | jq -r '.total_tokens // 0')"
-    fi
-  done < <(echo "${request}" | curl -sS -N "${OPENAI_API_URL}" \
-    "${auth_args[@]}" \
-    -H "content-type: application/json" \
-    -d @- \
-    --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-    --max-time 300
-  )
-
-  # Dispatch accumulated tool calls for parallel execution
-  if [[ ${#tc_ids[@]} -gt 0 && -n "${HARNESS_TOOL_FIFO:-}" ]]; then
-    for _didx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
-      _parsed="$(echo "${tc_args[$_didx]}" | jq -c '.' 2>/dev/null || echo '{}')"
-      echo "${_parsed}" | jq -c \
-        --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" \
-        '{id: $id, name: $name, input: .}' > "${HARNESS_TOOL_FIFO}"
-    done
-  fi
-
-  # Write tool_start events to .stream
-  if [[ ${#tc_ids[@]} -gt 0 && -n "${HARNESS_SESSION:-}" ]]; then
-    for _didx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
-      _parsed="$(echo "${tc_args[$_didx]}" | jq -c '.' 2>/dev/null || echo '{}')"
-      printf '%s\n' "$(jq -c -n --arg id "${tc_ids[$_didx]}" --arg name "${tc_names[$_didx]}" --argjson input "${_parsed}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
-    done
-  fi
-
-  # Build tool_calls array
-  tc_array="[]"
-  if [[ ${#tc_ids[@]} -gt 0 ]]; then
-    for idx in $(echo "${!tc_ids[@]}" | tr ' ' '\n' | sort -n); do
-      tc_array="$(printf '%s\n%s' "${tc_array}" "$(printf '%s' "${tc_args[$idx]}" | jq -Rs '.')" \
-        | jq -s -c --arg id "${tc_ids[$idx]}" --arg name "${tc_names[$idx]}" \
-        '.[0] + [{id: $id, type: "function", function: {name: $name, arguments: .[1]}}]'
-      )"
-    done
-  fi
-
-  if [[ -z "${resp_id}" && -z "${text_content}" && ${#tc_ids[@]} -eq 0 && -n "${non_sse_body}" ]]; then
-    err_msg="$(printf '%s' "${non_sse_body}" | jq -r '.error.message? // (.error | strings) // .detail // empty' 2>/dev/null)"
-    if [[ -n "${err_msg}" ]]; then
-      echo "openai API error: ${err_msg}" >&2
-      exit 1
-    fi
-  fi
-
-  # Reconstruct complete response
-  printf '%s\n%s' "$(printf '%s' "${text_content}" | jq -Rs '.')" "${tc_array}" \
-    | jq -s \
-    --arg id "${resp_id}" \
-    --arg model "${resp_model}" \
-    --arg finish_reason "${finish_reason}" \
-    --argjson prompt_tokens "${prompt_tokens}" \
-    --argjson completion_tokens "${completion_tokens}" \
-    --argjson total_tokens "${total_tokens}" \
-    '.[0] as $content | .[1] as $tool_calls |
-    {
-      id: $id,
-      object: "chat.completion",
-      model: $model,
-      choices: [{
-        index: 0,
-        message: (
-          {role: "assistant"}
-          | if ($content | length) > 0 then . + {content: $content} else . end
-          | if ($tool_calls | length) > 0 then . + {tool_calls: $tool_calls} else . end
-        ),
-        finish_reason: $finish_reason
-      }],
-      usage: {prompt_tokens: $prompt_tokens, completion_tokens: $completion_tokens, total_tokens: $total_tokens}
-    }'
-else
-  # No --speed-time here: a non-streaming response sends zero bytes while the
-  # server computes the full body, so an inactivity timer would falsely abort
-  # long-but-healthy requests. --max-time 300 remains the backstop.
-  response="$(echo "${request}" | curl -sS "${OPENAI_API_URL}" \
-    "${auth_args[@]}" \
-    -H "content-type: application/json" \
-    -d @- \
-    --max-time 300
-  )"
-
-  # Check for API errors
-  error_msg="$(echo "${response}" | jq -r '.error.message // empty' 2>/dev/null)" || true
-  if [[ -n "${error_msg}" ]]; then
-    echo "openai API error: ${error_msg}" >&2
-    exit 1
-  fi
-
-  echo "${response}"
-fi
+for field in temperature top_p; do
+  var="OPENAI_$(printf '%s' "${field}" | tr '[:lower:]' '[:upper:]')"
+  [[ -z "${!var:-}" ]] || request="$(printf '%s' "${request}" | jq -c --arg key "${field}" --argjson value "${!var}" '.[$key]=$value')"
+done
+key="${OPENAI_API_KEY:-}"
+[[ -n "${key}" ]] || key="$(_provider_cached_key openai)"
+headers=(-H 'content-type: application/json')
+[[ -z "${key}" ]] || headers+=(-H "Authorization: Bearer ${key}")
+response="$(printf '%s' "${request}" | curl -sS "${OPENAI_API_URL:-https://api.openai.com/v1/chat/completions}" "${headers[@]}" -d @- --max-time "${HARNESS_CURL_MAX_TIME:-5400}")" || { echo 'OpenAI request failed' >&2; exit 1; }
+normalized="$(printf '%s' "${response}" | jq -ce -s '
+  if length != 1 then error("invalid response") else .[0] end
+  | if .error != null or (.choices | type) != "array" or (.choices | length) != 1 then error("API error or missing choice") else . end
+  | . as $r | .choices[0] as $c | $c.message as $m
+  | if $m.role != "assistant" then error("missing assistant message") else . end
+  | {blocks:([
+      (if ($m.content | type) == "string" then {type:"text",text:$m.content}
+       elif $m.content == null then empty
+       elif ($m.content | type) == "array" then $m.content[] | if .type == "text" then {type:"text",text:.text} else error("unsupported content") end
+       else error("invalid text") end),
+      (($m.tool_calls // [])[] | if .type == "function" then
+        {type:"tool_call",id:.id,name:.function.name,input:(.function.arguments | fromjson)}
+        else error("unsupported tool call") end)]),
+    stop:(if $c.finish_reason == "tool_calls" then "tool_calls"
+      elif $c.finish_reason == "length" then "length"
+      elif $c.finish_reason == "stop" then "end" else error("missing or unsupported stop reason") end),
+    usage:{input_tokens:(.usage.prompt_tokens // 0),output_tokens:(.usage.completion_tokens // 0),
+      total_tokens:(.usage.total_tokens // ((.usage.prompt_tokens // 0)+(.usage.completion_tokens // 0))),
+      cache_read_input_tokens:(.usage.prompt_tokens_details.cached_tokens // 0),cache_creation_input_tokens:0},
+    provider_state:{protocol:"openai",message:$m}}
+  ' 2>/dev/null)" || { echo 'OpenAI API returned an error or malformed response/tool arguments' >&2; exit 1; }
+printf '%s' "${normalized}" | _provider_validate_response

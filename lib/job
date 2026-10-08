@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Side-effecting tools are never automatically replayed after interruption.
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+id="$1"; dir="${HARNESS_DATA}/jobs/${id}"; queue="${HARNESS_DATA}/queue/jobs/${id}.json"
+exec 8>"${HARNESS_DATA}/locks/job-${id}"; flock -n 8 || exit 0
+[[ -f "${queue}" ]] || exit 0
+record="${dir}/job.json"; actor="$(jq -r '.actor' "${record}")"
+child=""
+trap 'trap "" TERM INT; if [[ -n "${child}" ]]; then terminate_group "${child}"; wait "${child}" 2>/dev/null || true; fi; exit 143' TERM INT
+if [[ ! -f "${dir}/result.json" ]]; then
+  [[ ! -f "${dir}/lease.json" ]] || exit 0
+  jq -cn --argjson pid "$$" --arg start "$(process_start "$$")" '{pid:$pid,start:$start}' | atomic_write "${dir}/lease.json"
+  [[ -f "${queue}" ]] || exit 0
+  HARNESS_CWD="$(jq -r '.cwd' "${record}")"; export HARNESS_CWD HARNESS_ACTOR="${actor}"
+  _refresh_sources
+  binary="$(jq -r '.binary' "${record}")"; rc=0
+  seconds="${HARNESS_TOOL_TIMEOUT:-600}"
+  if [[ "$(jq -r '.name' "${record}")" == bash ]]; then
+    seconds="$(jq -r '.input.timeout // 120' "${record}")"
+    [[ "${seconds}" =~ ^[1-9][0-9]*$ ]] && (( seconds<=600 )) || seconds=120
+  fi
+  if [[ -x "${binary}" ]]; then
+    jq -c '.input' "${record}" >"${dir}/input.json"
+    HARNESS_JOB_MANAGED=1 setsid timeout --kill-after=5 "${seconds}" "${binary}" --exec <"${dir}/input.json" >"${dir}/stdout" 2>"${dir}/stderr" & child=$!
+    jq -c --argjson pid "${child}" --arg start "$(process_start "${child}" || true)" '.execution={pid:$pid,start:$start}' "${dir}/lease.json" | atomic_write "${dir}/lease.json"
+    wait "${child}" || rc=$?
+    terminate_group "${child}"; child=""
+  else
+    printf 'unknown tool: %s\n' "$(jq -r '.name' "${record}")" >"${dir}/stdout"; : >"${dir}/stderr"; rc=127
+  fi
+  jq -cn --rawfile out "${dir}/stdout" --rawfile err "${dir}/stderr" --arg id "${id}" --argjson rc "${rc}" '{id:$id,result:(($out+(if $rc!=0 and ($err|length)>0 then "\n"+$err else "" end)) as $s | if ($s|length)>30000 then $s[:15000]+"\n[clipped; full output is retained in the job artifact]\n"+$s[-15000:] else $s end),error:($rc!=0),exit_code:$rc}' | atomic_write "${dir}/result.json"
+fi
+store_emit job.completed "${actor}" "$(cat "${dir}/result.json")" "completed-${id}" >/dev/null
+rm -f "${queue}"

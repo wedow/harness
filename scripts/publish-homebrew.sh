@@ -14,7 +14,7 @@ TAP_REPO_URL="${TAP_REPO_URL:-https://github.com/${TAP_REPO}.git}"
 FORMULA_NAME="harness"
 CLASS_NAME="Harness"
 REPO_SLUG="wedow/harness"
-REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+REPO_ROOT="$(cd "$(dirname "$0")/.." >/dev/null && pwd)"
 
 [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version: $VERSION"; exit 1; }
 [[ "$SHA256" =~ ^[a-f0-9]{64}$ ]] || { echo "Invalid sha256: $SHA256"; exit 1; }
@@ -55,24 +55,28 @@ main() {
     mkdir -p "$TAP_DIR/Formula"
     cat > "$TAP_DIR/Formula/${FORMULA_NAME}.rb" <<EOF
 class ${CLASS_NAME} < Formula
-  desc "Minimal agent loop in bash"
+  desc "Persistent single-chat agent with separate Bash runtime processes"
   homepage "https://github.com/${REPO_SLUG}"
   url "https://github.com/${REPO_SLUG}/archive/refs/tags/v${VERSION}.tar.gz"
   sha256 "${SHA256}"
   license "MIT"
 
+  depends_on :linux
   depends_on "bash"
-  uses_from_macos "curl"
+  depends_on "curl"
   depends_on "jq"
-  uses_from_macos "perl"
+  depends_on "socat"
+  depends_on "util-linux"
+  depends_on "coreutils"
 
   def install
     bin.install "bin/harness"
     bin.install_symlink "harness" => "hs"
 $(formula_install_lines)
 
-    inreplace bin/"harness", /^readonly HARNESS_ROOT=.*$/, <<~EOS
-      readonly HARNESS_ROOT="#{prefix}"
+    inreplace bin/"harness", /^HARNESS_ROOT=.*$/, <<~EOS
+      HARNESS_ROOT="\${HARNESS_ROOT:-#{prefix}}"
+      export PATH="#{Formula["util-linux"].opt_bin}:#{Formula["coreutils"].opt_libexec}/gnubin:\$PATH"
     EOS
   end
 

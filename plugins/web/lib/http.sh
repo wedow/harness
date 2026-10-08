@@ -1,7 +1,6 @@
 # http.sh — minimal HTTP primitives for the serve command.
 # Per-connection process model: stdin/stdout is the socket.
 # Handlers set STATUS / HEADERS[] / BODY; respond_request serializes.
-# Streaming handlers bypass the triple and own the socket directly.
 
 STATUS=200
 HEADERS=()
@@ -61,8 +60,7 @@ respond_request() {
     printf '%s' "$BODY" | gzip -c > "${z}"
   fi
   for h in "${HEADERS[@]}"; do printf '%s\r\n' "$h"; done
-  # Session pages are dynamic per-request; without this, mobile browsers
-  # can serve stale copies from heuristic cache during reconnects.
+  # Feed responses and the client must stay current across server restarts.
   header Cache-Control "no-store"
   # Explicit framing (bytes, not chars: transcripts carry UTF-8) so proxies
   # never have to buffer close-delimited responses.
@@ -87,46 +85,7 @@ _status_reason() {
     200) echo OK ;; 303) echo "See Other" ;; 400) echo "Bad Request" ;;
     403) echo Forbidden ;; 413) echo "Content Too Large" ;;
     404) echo "Not Found" ;; 405) echo "Method Not Allowed" ;;
+    415) echo "Unsupported Media Type" ;;
     500) echo "Internal Server Error" ;; *) echo OK ;;
   esac
-}
-
-# SSE escape hatch: emit headers then own the socket (caller streams).
-respond_sse() {
-  respond 200 OK
-  header Content-Type "text/event-stream"
-  header Cache-Control no-cache
-  header X-Accel-Buffering no
-  header Connection close
-  end_headers
-}
-
-# One datastar-patch-elements event carrying a full fragment. Datastar
-# morphs it into the DOM by top-level element id.
-# socat execs us with SIGPIPE ignored, so detect dead sockets via the
-# write error instead: every printf returns nonzero on EPIPE.
-sse_patch() { # $1 = fragment html, $2 = "append" to add new elements, $3 = target selector (default body)
-  local line
-  { printf 'event: datastar-patch-elements\n'; } 2>/dev/null || return 1
-  if [[ "${2:-}" == "append" ]]; then
-    { printf 'data: selector %s\ndata: mode append\n' "${3:-body}"; } 2>/dev/null || return 1
-  fi
-    # SSE treats a lone CR as a line terminator, so a CR inside a fragment
-    # line would split the event mid-HTML and corrupt the client-side morph
-    # (message bodies from CRLF-bearing tool results). Strip CRs at this
-    # boundary; they are invisible in rendered HTML anyway.
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-      line="${line//$'\r'/}"
-    { printf 'data: elements %s\n' "${line}"; } 2>/dev/null || return 1
-  done < <(printf '%s' "$1" 2>/dev/null)
-  { printf '\n'; } 2>/dev/null || return 1
-}
-
-html_escape() {
-  printf '%s' "$1" | sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'
-}
-
-urldecode() {
-  local s=${1//+/ }
-  printf '%b' "${s//%/\\x}"
 }

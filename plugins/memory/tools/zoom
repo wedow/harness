@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --describe) echo 'open a chat summary or original message' ;;
+  --schema)
+    cat <<'JSON'
+{"name":"zoom","description":"Open memory line id+n into its two child summaries; n=1 retrieves the original message. id must be a multiple of the power-of-two n. Long messages use zero-based pages. A string id opens the named actor's original chat: page selects a message, part selects a page within that message.","input_schema":{"type":"object","properties":{"id":{"oneOf":[{"type":"integer","minimum":0},{"type":"string"}]},"n":{"type":"integer","minimum":1,"default":1},"page":{"type":"integer","minimum":0,"default":0},"part":{"type":"integer","minimum":0,"default":0},"actor":{"type":"string","description":"Optional actor identifier; defaults to the current actor."}},"required":["id"],"additionalProperties":false}}
+JSON
+    ;;
+  --exec)
+    source "${HARNESS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}/lib/memory.sh"
+    data="$(cat)"
+    printf '%s' "${data}" | jq -e 'type=="object" and has("id")' >/dev/null
+    actor="$(printf '%s' "${data}" | jq -r --arg actor "${HARNESS_ACTOR:-main}" '.actor // $actor')"
+    if [[ "$(printf '%s' "${data}" | jq -r '.id|type')" == string ]]; then
+      name="$(printf '%s' "${data}" | jq -r '.id')"
+      actor="${name}"
+      if [[ -f "${HARNESS_DATA}/state.json" ]]; then
+        actor="$(jq -r --arg name "${name}" '
+          if .actors[$name] != null then $name else
+          [.actors[] | select(.name==$name)] |
+          if length==1 then .[0].id elif length>1 then
+            error("ambiguous actor name; use an actor id: "+(map(.id)|join(", ")))
+          else $name end end' "${HARNESS_DATA}/state.json")"
+      fi
+      page="$(printf '%s' "${data}" | jq -r '.page // 0')"
+      part="$(printf '%s' "${data}" | jq -r '.part // 0')"
+      record="$(memory_zoom "${actor}" "${page}" 1 "${part}")"
+      total="$(jq -r '.total' "$(_memory_dir "${actor}")/state.json")"
+      printf '%s' "${record}" | jq -c --arg actor "${actor}" --argjson total "${total}" \
+        '.+{actor:$actor,total_messages:$total,next_message:(if .id+1<$total then .id+1 else null end)}'
+    else
+      id="$(printf '%s' "${data}" | jq -r '.id')"
+      n="$(printf '%s' "${data}" | jq -r '.n // 1')"
+      page="$(printf '%s' "${data}" | jq -r '.page // 0')"
+      memory_zoom "${actor}" "${id}" "${n}" "${page}"
+    fi
+    ;;
+  *) echo 'usage: zoom --schema | --describe | --exec' >&2; exit 1 ;;
+esac

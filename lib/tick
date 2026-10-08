@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+source "${HARNESS_ROOT}/lib/provider.sh"
+source "${HARNESS_ROOT}/lib/memory.sh"
+source "${HARNESS_ROOT}/lib/runtime.sh"
+runtime_tick

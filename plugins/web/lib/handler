@@ -1,40 +1,18 @@
 #!/usr/bin/env bash
-# handler — per-connection HTTP entry point. stdin/stdout is the socket.
-# Sourced environment: HARNESS_ROOT, HARNESS_SESSIONS (set by serve).
-set -uo pipefail
+# One HTTP request per socat connection. The reactor owns execution.
+set -euo pipefail
 
-# Timestamp every stderr line (including bash's own diagnostics like
-# "printf: write error: Broken pipe") so connection-log noise is
-# correlatable with events in other logs.
-# fd 9 = the real stderr: the timestamper must keep writing there even
-# when the socket (stdout) is broken — that is exactly when the noise happens.
-exec 9>&2
-exec 2> >(
-  while IFS= read -r line; do
-    printf '%s %s\n' "$(date +%Y-%m-%dT%H:%M:%S)" "${line}" >&9
-  done
-)
-
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
 source "${HARNESS_ROOT}/plugins/web/lib/http.sh"
-source "${HARNESS_ROOT}/plugins/core/lib/session.sh"
-source "${HARNESS_ROOT}/plugins/web/lib/pages.sh"
 
-# ------------------------------------------------------------------ parse --
-METHOD="" RPATH="" BODY=""
-declare -A HTTP_HEADERS=()
+_json_error() {
+  STATUS="$1"
+  HEADERS=("Content-Type: application/json; charset=utf-8")
+  BODY="$(jq -cn --arg error "$2" '{error:$error}')"
+}
 
-read -r -t 10 -a REQ_LINE || { exit 0; }
-METHOD="${REQ_LINE[0]:-}"
-RPATH="${REQ_LINE[1]:-/}"
-RPATH="${RPATH%%\?*}" # strip query string
-while IFS= read -r -t 10 h; do
-  h="${h%$'\r'}"; [[ -z "${h}" ]] && break
-  key="${h%%:*}"; HTTP_HEADERS["${key,,}"]="${h#*: }"
-done
-# Exact allowlists for deployments behind a loopback reverse proxy. A trusted
-# origin also permits its hostname as Host; proxies that rewrite Host to
-# loopback work with the same origin setting.
-_web_host_allowed() { # $1 = lowercased Host header
+_web_host_allowed() {
   local allowed
   local -a hosts origins
   [[ "$1" =~ ^(127\.0\.0\.1|localhost)(:[0-9]{1,5})?$ ]] && return 0
@@ -52,7 +30,7 @@ _web_host_allowed() { # $1 = lowercased Host header
   return 1
 }
 
-_web_origin_allowed() { # $1 = Origin header, $2 = lowercased Host header
+_web_origin_allowed() {
   local allowed
   local -a hosts origins
   if [[ "$1" == "http://$2" ]]; then
@@ -69,55 +47,127 @@ _web_origin_allowed() { # $1 = Origin header, $2 = lowercased Host header
   return 1
 }
 
-# The server listens on loopback, but DNS rebinding can still give it a
-# foreign Host. Check every method, including transcript reads over GET.
-host="${HTTP_HEADERS[host]:-}"
-host="${host,,}"
-if ! _web_host_allowed "${host}"; then
-  STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden host"
-  respond_request; exit 0
-fi
-if [[ "${METHOD}" == "POST" ]]; then
-  # Browsers can send cross-origin forms to loopback. Reject them before any
-  # state-changing route runs. Local HTTP clients may omit Origin.
-  origin="${HTTP_HEADERS[origin]:-}"
-  fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
-  if { [[ -n "${origin}" ]] && ! _web_origin_allowed "${origin}" "${host}"; } ||
-     { [[ -z "${origin}" && -n "${fetch_site}" ]] &&
-       [[ "${fetch_site}" != "same-origin" && "${fetch_site}" != "none" ]]; }; then
-    STATUS=403; HEADERS=("Content-Type: text/plain"); BODY="forbidden origin"
-    respond_request; exit 0
-  fi
-  clen="${HTTP_HEADERS[content-length]:-0}"
-  # Bash recursively evaluates variable values in arithmetic contexts. A
-  # header such as BODY[$(command)] must never reach an arithmetic expression.
-  if [[ ! "${clen}" =~ ^[0-9]+$ ]]; then
-    STATUS=400; HEADERS=("Content-Type: text/plain"); BODY="invalid Content-Length"
-    respond_request; exit 0
-  fi
-  if [[ "${#clen}" -gt 7 ]] || (( 10#$clen > 1048576 )); then
-    STATUS=413; HEADERS=("Content-Type: text/plain"); BODY="request body too large"
-    respond_request; exit 0
-  fi
-  clen=$((10#$clen))
-  (( clen > 0 )) && IFS= read -r -N "${clen}" -t 30 BODY || true
-fi
+_feed_query() {
+  local pair key value
+  local -A seen=()
+  AFTER=0 BEFORE=0 LIMIT=100
+  [[ -n "$1" ]] || return 0
+  local -a pairs
+  IFS='&' read -r -a pairs <<< "$1"
+  for pair in "${pairs[@]}"; do
+    key="${pair%%=*}"; value="${pair#*=}"
+    [[ -n "${key}" && "${pair}" == *=* ]] || return 1
+    case "${key}" in after|before|limit) ;; *) return 1 ;; esac
+    [[ -z "${seen[$key]+x}" && "${value}" =~ ^[0-9]{1,12}$ ]] || return 1
+    seen["${key}"]=1
+    case "${key}" in
+      after) AFTER=$((10#${value})) ;;
+      before) BEFORE=$((10#${value})) ;;
+      limit) LIMIT=$((10#${value})) ;;
+      *) return 1 ;;
+    esac
+  done
+  (( LIMIT > 0 && LIMIT <= 200 && (AFTER == 0 || BEFORE == 0) ))
+}
 
-# ------------------------------------------------------------------ route --
-case "${METHOD}" in
-  GET)
-    if [[ "${RPATH}" == "/" ]]; then handle_home
-    elif [[ "${RPATH}" == "/datastar.js" ]]; then handle_asset datastar.js
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)/events$ ]]; then handle_events "${BASH_REMATCH[1]}"
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_session "${BASH_REMATCH[1]}"
-    else handle_404; fi ;;
-  POST)
-    if [[ "${RPATH}" == "/new" ]]; then handle_new
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)/stop$ ]]; then handle_stop "${BASH_REMATCH[1]}"
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)/retry$ ]]; then handle_retry "${BASH_REMATCH[1]}"
-    elif [[ "${RPATH}" =~ ^/s/([^/]+)$ ]]; then handle_send "${BASH_REMATCH[1]}"
-    else handle_404; fi ;;
-  *) handle_404 ;;
-esac
+_route() {
+  local result text message_id
+  case "${METHOD} ${RPATH}" in
+    'GET /')
+      HEADERS=("Content-Type: text/html; charset=utf-8")
+      BODY="$(cat "${HARNESS_ROOT}/plugins/web/public/index.html")"
+      ;;
+    'GET /app.js'|'GET /style.css')
+      if [[ "${RPATH}" == /app.js ]]; then
+        HEADERS=("Content-Type: text/javascript; charset=utf-8")
+      else
+        HEADERS=("Content-Type: text/css; charset=utf-8")
+      fi
+      BODY="$(cat "${HARNESS_ROOT}/plugins/web/public${RPATH}")"
+      ;;
+    'GET /api/events')
+      _feed_query "${QUERY}" || { _json_error 400 'invalid feed cursor or page size'; return; }
+      if result="$(store_feed "${AFTER}" "${BEFORE}" "${LIMIT}")"; then BODY="${result}"
+      else _json_error 500 'could not read the chat'; fi
+      ;;
+    'GET /api/status')
+      if result="$(store_status)"; then BODY="${result}"
+      else _json_error 500 'could not read activity'; fi
+      ;;
+    'POST /api/messages')
+      if ! printf '%s' "${REQUEST_BODY}" | jq -e -s '
+        length == 1 and (.[0] |
+        type == "object" and (.text | type == "string") and
+        (.text | test("\\S")) and
+        (.text | contains("\u0000") | not) and
+        ((.id == null) or ((.id | type == "string") and
+          (.id | test("^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")))))' >/dev/null 2>&1; then
+        _json_error 400 'expected text and an optional message id'; return
+      fi
+      # The sentinel keeps trailing newlines intact through command substitution.
+      text="$(printf '%s' "${REQUEST_BODY}" | jq -jr '.text'; printf x)"
+      text="${text%x}"
+      message_id="$(printf '%s' "${REQUEST_BODY}" | jq -r '.id // empty')"
+      if result="$(store_submit "${text}" main "${message_id}")"; then BODY="${result}"
+      else _json_error 500 'could not save the message'; fi
+      ;;
+    'POST /api/cancel')
+      if result="$(store_cancel main)"; then BODY="${result}"
+      else _json_error 500 'could not request cancellation'; fi
+      ;;
+    *) _json_error 404 'not found' ;;
+  esac
+}
 
-respond_request
+_main() {
+  local request h key host origin fetch_site clen content_type headers_done=false
+  IFS= read -r -t 10 request || return 0
+  local -a line
+  read -r -a line <<< "${request%$'\r'}"
+  [[ "${#line[@]}" == 3 ]] || { _json_error 400 'invalid request'; respond_request; return; }
+  METHOD="${line[0]}"
+  RPATH="${line[1]%%\?*}"
+  QUERY=""
+  [[ "${line[1]}" == *\?* ]] && QUERY="${line[1]#*\?}"
+  while IFS= read -r -t 10 h; do
+    h="${h%$'\r'}"
+    if [[ -z "${h}" ]]; then headers_done=true; break; fi
+    [[ "${h}" == *:* ]] || { _json_error 400 'invalid header'; respond_request; return; }
+    key="${h%%:*}"; key="${key,,}"
+    [[ "${key}" =~ ^[a-z0-9_-]+$ ]] || { _json_error 400 'invalid header name'; respond_request; return; }
+    [[ -n "${key}" && -z "${HTTP_HEADERS[$key]+x}" ]] || { _json_error 400 'duplicate or empty header'; respond_request; return; }
+    HTTP_HEADERS["${key}"]="${h#*:}"
+    HTTP_HEADERS["${key}"]="${HTTP_HEADERS[$key]# }"
+  done
+  [[ "${headers_done}" == true ]] || { _json_error 400 'incomplete headers'; respond_request; return; }
+  host="${HTTP_HEADERS[host]:-}"; host="${host,,}"
+  _web_host_allowed "${host}" || { _json_error 403 'forbidden host'; respond_request; return; }
+  REQUEST_BODY=""
+  if [[ "${METHOD}" == POST ]]; then
+    origin="${HTTP_HEADERS[origin]:-}"; fetch_site="${HTTP_HEADERS[sec-fetch-site]:-}"
+    if { [[ -n "${origin}" ]] && ! _web_origin_allowed "${origin}" "${host}"; } ||
+       { [[ -z "${origin}" && -n "${fetch_site}" && "${fetch_site}" != same-origin && "${fetch_site}" != none ]]; }; then
+      _json_error 403 'forbidden origin'; respond_request; return
+    fi
+    [[ -z "${HTTP_HEADERS[transfer-encoding]:-}" ]] || { _json_error 400 'unsupported body framing'; respond_request; return; }
+    clen="${HTTP_HEADERS[content-length]:-0}"
+    [[ "${clen}" =~ ^[0-9]+$ ]] || { _json_error 400 'invalid Content-Length'; respond_request; return; }
+    if [[ "${#clen}" -gt 7 ]] || (( 10#${clen} > 1048576 )); then
+      _json_error 413 'request body too large'; respond_request; return
+    fi
+    clen=$((10#${clen}))
+    if (( clen > 0 )); then
+      if ! LC_ALL=C IFS= read -r -N "${clen}" -t 30 REQUEST_BODY; then
+        _json_error 400 'incomplete request body'; respond_request; return
+      fi
+    fi
+    content_type="${HTTP_HEADERS[content-type]:-application/json}"
+    [[ "${content_type,,}" =~ ^application/json([\;[:space:]].*)?$ ]] || { _json_error 415 'expected application/json'; respond_request; return; }
+  fi
+  HEADERS=("Content-Type: application/json; charset=utf-8")
+  if ! store_init; then _json_error 500 'could not open the chat'; respond_request; return; fi
+  _route
+  respond_request
+}
+
+_main

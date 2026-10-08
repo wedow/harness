@@ -49,7 +49,7 @@ for (( i=${#walk_dirs[@]}-1; i>=0; i-- )); do
 done
 
 # Discover skills: name → {description, path}, last wins (most-local)
-declare -A skill_names skill_descs skill_paths
+declare -A skill_names=() skill_descs=() skill_paths=()
 for sdir in "${skill_dirs[@]}"; do
   for candidate in "${sdir}"/*/; do
     [[ -d "${candidate}" ]] || continue

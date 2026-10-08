@@ -1,279 +1,204 @@
 # harness
 
-A minimal agent loop in bash. Everything else is plugins.
+One continuous chat, with durable memory and separate Bash processes for the
+web frontend, the reactor, and model workers. Messages survive process restarts.
+The agent starts each new turn from a saved tree of summaries and can open an
+older summary with `zoom` when it needs the original details.
 
-The core script handles plugin discovery, hook dispatch, and the agentic loop. Tools, providers, prompt loading, message serialization, cost tracking, approval gates — all of it lives in plugins that can be written in any language and dropped into well-known directories.
+This branch replaces the session-based loop. Its store defaults to
+`~/.harness/chat`; existing session directories are left in place and are not
+imported automatically.
 
-## Install
+## Run from source
 
-**Homebrew (macOS/Linux):**
-```bash
-brew install wedow/tools/harness
-```
+Requires Linux, Bash 4+, `jq`, `curl`, `socat`, and the standard Linux utilities
+`flock`, `setsid`, `timeout`, and `sync`. The runtime has no package manager,
+language runtime, or build step.
 
-**Arch Linux (AUR):**
-```bash
-yay -S harness  # or paru, etc.
-```
-
-**From source (auto-updates on git pull):**
 ```bash
 git clone https://github.com/wedow/harness.git
-cd harness && ln -s "$PWD/bin/harness" ~/.local/bin/harness
-ln -s "$PWD/bin/harness" ~/.local/bin/hs  # alias
+cd harness
+ln -s "$PWD/bin/harness" ~/.local/bin/harness
+ln -s "$PWD/bin/harness" ~/.local/bin/hs
 ```
 
-Dependencies: bash 4+, jq, curl
-
-## Quick start
+Configure a provider, then start the processes:
 
 ```bash
-# Set an API key for any discovered provider
-export ANTHROPIC_API_KEY="sk-ant-..."  # or
-export OPENAI_API_KEY="sk-..."        # or use a variant
-export GROQ_API_KEY="gsk_..."
-
-# Or use your ChatGPT subscription (Plus/Pro/Team/Enterprise)
-hs auth set chatgpt                    # opens browser for OAuth login
-
-# Or use your Claude subscription (Pro/Team/Enterprise)
-hs auth set claude                     # opens browser for OAuth login
-
-# One-shot: run an agent to completion
-hs "find all TODO comments in this repo and create a summary"
-
-# Interactive REPL
-hs
-
-# Resume a session
-hs session list
-hs 20260324-143022-12345
-
-# See what's discovered from your current directory
-hs help
+export ANTHROPIC_API_KEY="your-api-key"
+export HARNESS_PROVIDER=anthropic
+bin/harness start
 ```
 
-## How it works
-
-The core is a state follower (~100 SLOC). It does three things:
-
-1. **Bootstraps** with bundled plugins + `~/.harness`, then runs `call sources` — a hookable pipeline that discovers all source directories. The default `30-walk-dirs` hook walks CWD upward collecting `.harness/` directories; `40-scope-providers` filters by active provider. Discovery reruns every loop iteration, so plugins can be added/removed at runtime.
-
-2. **Dispatches hooks** via `call <name>`. Hooks are executables sorted by numeric prefix, chained as a pipeline. Hook output is JSON; the `next_state` field drives state transitions.
-
-3. **Follows states** until `next_state` is empty. The core has no built-in transitions — the topology `start → assemble → send → receive → (tool_exec → tool_done → assemble) → done` is emergent from which hooks exist and what `next_state` they emit.
-
-The loop has zero provider-specific knowledge. Message formats, API calls, response parsing — all of it lives in provider-specific hooks (`plugins/anthropic/`, `plugins/openai/`). Provider-agnostic behavior (tool execution, prompt loading, tool discovery) lives in `plugins/core/`. Additional bundled plugins provide subagent spawning (`plugins/subagents/`) and skill discovery (`plugins/skills/`).
-
-## Plugin types
-
-### Commands
-
-Executables in `commands/` directories. CLI subcommands are discovered via the same source walk as other plugin types. Each supports one flag:
+Open `http://127.0.0.1:8080`. You can also submit a message from the terminal:
 
 ```bash
-my-command --describe  # one-line human description
-my-command [args...]   # execute the command
+bin/harness submit "Find the TODO comments in this repository and summarize them"
+bin/harness history
+bin/harness status
 ```
 
-Built-in commands: `agent`, `repl`, `acp`, `acp-stream`, `session`, `tools`, `hooks`, `help`, `version`. On a TTY with no args, the default command is `repl` (interactive); otherwise `agent` (headless one-shot). Unrecognized first arg also falls back to `agent`. Override any built-in by placing a same-named executable in a higher-priority `commands/` directory.
-
-### Tools
-
-Executables in `tools/` directories. Each supports three flags:
+Provider selection can use `HARNESS_PROVIDER`, `HARNESS_MODEL`, or
+`settings.conf` in a discovered configuration directory. API providers include
+Anthropic and OpenAI-compatible endpoints; ChatGPT and Claude subscription
+providers use the existing OAuth credential flow:
 
 ```bash
-my-tool --schema    # emit JSON tool schema (Anthropic format)
-my-tool --describe  # one-line human description
-my-tool --exec      # execute: read JSON input from stdin, write result to stdout
+bin/harness auth set chatgpt
+bin/harness auth set claude
 ```
 
-Write tools in any language. See `examples/tools/web_fetch` for a Python example.
+Use `bin/harness help` for commands and a provider executable’s `--env` flag
+for its supported settings.
 
-Built-in tools: `bash`, `read_file`, `write_file`, `edit_file`, `agent`, `skill`.
+## Separate processes
 
-### Hooks
-
-Executables in `hooks.d/<stage>/` directories. Stages:
-
-| Stage | stdin | Emits next_state | Purpose |
-|---|---|---|---|
-| `sources` | `{}` | _(n/a — called by core)_ | Discover source directories |
-| `resolve` | `{provider, model}` | _(called by agent cmd)_ | Resolve provider and model |
-| `start` | `{}` | `assemble` | Session initialization |
-| `assemble` | `{}` | `send` | Build the API request payload |
-| `send` | payload JSON | `receive` | Call the provider |
-| `receive` | API response | `tool_exec` or `done` | Parse response, save message, extract tool calls |
-| `tool_exec` | context w/ `tool_calls` | `tool_done` | Pop and execute first tool call |
-| `tool_done` | tool result + remaining | `tool_exec` or `assemble` | Save result, loop or continue |
-| `error` | context JSON | _(empty = stop)_ | Handle errors |
-| `done` | context JSON | _(empty = stop)_ | Cleanup (terminal) |
-
-All hooks chain as a pipeline: each receives the previous hook's stdout on stdin. The last hook in each pipeline must emit `next_state` to declare the transition. Empty or absent `next_state` stops the loop.
-
-Naming convention: `NN-name` where NN controls execution order. Examples:
-- `10-messages` — runs first in the assemble stage
-- `20-tools` — runs second
-- `50-G-cost-guard` — a gate hook (convention, not enforced)
-
-### Providers
-
-Executables in `providers/` directories. Receive the assembled payload JSON on stdin, output the raw API response. Providers also support introspection flags for auto-discovery:
+`harness` with no arguments starts the managed components: one web server, one
+reactor, and five model workers by default. Each component can be stopped or
+restarted independently:
 
 ```bash
-my-provider --describe  # one-line description
-my-provider --ready     # exit 0 if credentials are configured
-my-provider --defaults  # key=value pairs (e.g. model=claude-sonnet-4-6)
-my-provider --env       # list supported env vars with descriptions
+harness start
+harness restart web
+harness restart reactor
+harness restart worker-1
+harness stop all
 ```
 
-If `HARNESS_PROVIDER` is not set, the hookable `resolve` stage auto-selects the first discovered provider whose `--ready` exits 0, and loads its `--defaults` for unset vars like `HARNESS_MODEL`.
-
-All built-in providers support `--stream` for SSE streaming. When stdout is a TTY, responses stream token-by-token to the terminal. Tool calls are dispatched for parallel execution as they arrive during streaming — by the time the response finishes, tools may already be done.
-
-Built-in: `anthropic`, `openai`, `chatgpt`, `claude`. Each lives in its own provider plugin directory with provider-specific hooks for message assembly and response parsing. The `openai` provider works with any OpenAI-compatible API (ollama, llama.cpp, vLLM) — set `OPENAI_API_URL` to point at a local server. The `chatgpt` provider authenticates via OAuth2 PKCE and uses ChatGPT subscription quotas (Plus/Pro/Team/Enterprise) — no API key needed. The `claude` provider authenticates via OAuth2 PKCE with Claude.ai subscriptions (Pro/Team/Enterprise) — no API key needed.
-
-#### Provider variants
-
-Many services share the same API format — they just need a different URL and API key. Instead of writing a full provider plugin, create a `.conf` file:
-
-```
-protocol=openai
-description=Groq (OpenAI-compatible)
-model=openai/gpt-oss-120b
-url=https://api.groq.com/openai/v1/chat/completions
-auth_env=GROQ_API_KEY
-```
-
-Optional fields: `max_tokens` (override protocol default), `stream=always` (force streaming even in non-TTY mode — needed for APIs that require `stream=true` for high token limits).
-
-Place it in any `providers/` directory (`~/.harness/providers/`, `.harness/providers/`, or a plugin's `providers/`). Harness resolves the conf to the protocol's provider binary, sets the right env vars, and runs the protocol's hooks — no symlinks or plugin directories needed.
-
-Bundled variants: `groq`, `deepseek`, `openrouter` (OpenAI-compatible), `fireworks`, `zai` (Anthropic-compatible).
+The foreground commands are useful when developing or running processes under
+another supervisor. Run each in its own terminal:
 
 ```bash
-# Use a variant
-export GROQ_API_KEY="gsk_..."
-HARNESS_PROVIDER=groq hs "hello"
-
-# Or store credentials persistently
-hs auth set groq
-HARNESS_PROVIDER=groq hs "hello"
-
-# Use ChatGPT subscription (no API key needed)
-hs auth set chatgpt              # opens browser for OAuth login
-HARNESS_PROVIDER=chatgpt hs "hello"
-
-# Use Claude subscription (no API key needed)
-hs auth set claude               # opens browser for OAuth login
-HARNESS_PROVIDER=claude hs "hello"
+harness serve         # web only
+harness reactor      # event processing and scheduling
+harness worker 1     # one model worker; use different numbers for others
 ```
 
-See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) for full protocol details on all plugin types.
+The web server saves input and displays completed messages. It does not make
+model calls or own the active task. The browser polls with a cursor, reconnects
+automatically, preserves drafts, and retries a submission using its original
+ID when a response is lost. Older history loads in pages.
 
-## Directory structure
+The reactor projects committed events into actor state, creates model requests,
+and launches background tool jobs. Workers claim model requests from the
+filesystem queue and publish their result. Workers check turn requests first,
+then alternate priority after a turn so summaries also make progress.
+Tool completion and subagent reports enter the inbox as observations; the agent
+ends its turn after launching jobs and resumes when results or new input arrive.
 
+Each request records its payload, provider, model, tools, and code version.
+In-flight work keeps that version; newly scheduled work can use updated code.
+The event journal and queued work remain on disk across component restarts.
+An interrupted tool with an uncertain execution outcome is reported as an error
+rather than automatically executed again.
+
+## Memory
+
+The memory layout follows the [UniiChat design](https://gist.githubusercontent.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449/raw/3c190e06f34aba0c69f49042c526093269604935/optchat.md).
+
+Each actor has an append-only message log and binary tree. Leaves summarize one
+message; a parent summarizes two adjacent siblings. Nodes target 512 UTF-8
+bytes. Short inputs can become nodes without a model call. Completed nodes are
+immutable, and summaries are built from queued ready work.
+
+The saved view covers the chat in chronological order, with finer detail near
+the present. It grows to 128,000 bytes, then merges available sibling pairs down
+to 64,000 bytes, ranked by age relative to the pair's size. The smaller view used
+for compactions grows from 16,000 to 32,000 bytes. Views are saved and reused
+across restarts rather than rebuilt from the log.
+
+A fresh turn waits until the earlier messages it needs have summaries, then
+receives the view followed by the new input. Truncated responses continue with
+their active-turn protocol messages. Visible replies and tool calls feed memory;
+reasoning does not. Subagents have their own logs and return reports to the
+parent. `zoom` opens summaries or original messages; `date` looks up a message's
+timestamp.
+
+## Files and extensions
+
+```text
+bin/harness                 CLI dispatch
+lib/bootstrap.sh            configuration, discovery, shared helpers
+lib/store.sh                immutable events, submissions, feed, status
+lib/runtime.sh              event projection and scheduling
+lib/memory.sh               tree, views, summary queue, zoom/date
+lib/provider.sh             provider resolution and canonical protocol
+lib/services.sh             managed process start/stop/restart
+lib/{component,reactor,worker,request,job,tick}
+                            foreground process executables
+plugins/core/tools/         file and shell tools
+plugins/memory/             zoom/date tools
+plugins/subagents/          background delegation
+plugins/skills/             skill loading
+plugins/{anthropic,openai,chatgpt}/providers/
+plugins/web/                HTTP frontend and standalone browser assets
 ```
-~/AGENTS.md                  # global agent instructions (agents.md standard)
-~/.harness/                  # global (always loaded)
-  prompts/                   # additional prompt files (sorted, all loaded)
-    00-persona.md
-    10-coding-style.md
-  commands/                  # global custom commands
-  tools/                     # global custom tools
-  hooks.d/                   # global hooks
-  providers/                 # global providers and variant confs
-  sessions/                  # session storage (default)
 
-~/project/AGENTS.md          # project-specific instructions (agents.md standard)
-~/project/.harness/          # project-local (loaded when CWD is under ~/project)
-  commands/
-    deploy                   # project-specific deploy command
-  tools/
-    lint-check               # project-specific tool
-  hooks.d/
-    tool_exec/
-      05-approve             # require approval for this project
-  skills/
-    my-skill/
-      SKILL.md               # frontmatter (name, description) + instructions
+The durable store is separate from code and configuration:
+
+```text
+$HARNESS_DATA/
+  events/                   immutable ordered event records
+  state.json                reactor's current projection
+  queue/requests/            turn and summary requests
+  queue/jobs/                background jobs
+  requests/                 saved requests, leases, completed results
+  jobs/                     job records, leases, completed results
+  actors/<id>/memory/
+    main/YYYY-MM-DD.jsonl    actor's message log
+    tree/YYYY-MM-DD.jsonl    completed summary nodes
+    view.json               saved turn view
+    compact-view.json       saved compaction view
+  components/               managed process identities
+  code/                     code snapshots for scheduled work
+  logs/                     component and job diagnostics
 ```
 
-System prompts follow the [agents.md](https://agents.md) standard: place an `AGENTS.md` file at the root of any directory with a `.harness/` config. For composable prompt fragments, use `prompts/*.md` inside `.harness/`.
+Discovery combines bundled `plugins/*`, `HARNESS_HOME`, and ancestor
+`.harness/` directories from the working directory up to `/`. Local executables
+with the same name override earlier ones. Tools implement `--schema`,
+`--describe`, and `--exec`; providers use the canonical request/response protocol.
+Prompts are assembled from discovered `prompts/*.md` files and nearby `AGENTS.md`
+files. Hooks remain executable JSON pipelines for named extension points.
 
-Skills are directories containing a `SKILL.md` with YAML frontmatter (`name`, `description`). Place them in `.harness/skills/` or `.agents/skills/` at any level, or bundle them with a plugin via `plugins/<name>/skills/`. The `35-skills` assemble hook discovers them and injects a catalog into the system prompt; the `skill` tool loads full instructions on demand. The bundled `extend-harness` skill teaches agents how to write new tools, hooks, providers, and skills at runtime.
+See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) and
+[docs/PROVIDER_PROTOCOL.md](docs/PROVIDER_PROTOCOL.md) for the executable contracts.
 
-When multiple `.harness/` directories exist in the path from CWD to `$HOME`, they all contribute. For hooks and tools with the same basename, the most-local one wins. For prompt content, everything is concatenated (global first, local last, so local instructions can refine global ones).
-
-## Message storage
-
-Each session is a directory of markdown files:
-
-```
-sessions/20260324-143022-12345/
-  session.conf                       # metadata (model, provider, cwd, timestamps)
-  messages/
-    0001-user.md                     # user message
-    0002-assistant.md                # assistant response (with tool_call blocks)
-    0003-tool_result.md              # tool execution result
-    0004-tool_result.md              # (consecutive results grouped by assembler)
-    0005-assistant.md                # continuation
-```
-
-Each message file has YAML frontmatter with metadata (`role`, `seq`, `timestamp`, `model`, `provider`, `stop`, token counts) and a markdown body. The format is provider-agnostic — tool calls use `tool_call` (not provider-specific names), stop reasons are normalized (`end`, `tool_calls`, `length`, `error`):
-
-````
-```tool_call id=call_abc123 name=bash
-{"command": "ls -la"}
-```
-````
-
-Provider-specific assemble hooks (e.g., `plugins/anthropic/hooks.d/assemble/10-messages`) translate this canonical format into the provider's API message format. Because the filesystem *is* the state, you can switch providers mid-session and the message history just works.
-
-## Environment
+## Configuration
 
 | Variable | Default | Purpose |
-|---|---|---|
-| `HARNESS_HOME` | `~/.harness` | Base config directory |
-| `HARNESS_SESSIONS` | nearest `.harness/sessions/` up from CWD, else `$HARNESS_HOME/sessions` | Session storage (auto-discovered) |
-| `HARNESS_MODEL` | auto from provider `--defaults` | Model identifier |
-| `HARNESS_PROVIDER` | auto: first provider with credentials | Provider plugin name |
-| `HARNESS_TOOL_TIMEOUT` | `120` | Wall-clock cap for one tool call (bash tool default; per-call `timeout` param overrides) |
-| `HARNESS_AGENT_TIMEOUT` | `18000` | Wall-clock budget for one subagent (agent tool; per-call `timeout` param overrides) |
-| `HARNESS_AGENT_CONCURRENCY` | `4` | Concurrent subagent provider calls sharing one root session |
-| `HARNESS_LENGTH_CONTINUATIONS` | `2` | Continuations granted when a response hits the model's output-token cap before failing |
-| `HARNESS_CURL_MAX_TIME` | `5400` | Provider HTTP wall-clock cap (streaming and non-streaming) |
-| `HARNESS_CURL_SPEED_TIME` | `60` | Provider streaming inactivity abort (seconds without bytes) |
-| `HARNESS_THINKING` | provider default | Thinking-effort knob passed to adaptive-thinking models |
-| `HARNESS_SERVE_PORT` | `8080` | Web UI port (`harness serve`) |
-| `HARNESS_WEB_ALLOWED_ORIGINS` | unset | Exact additional browser origins for the web UI (also permits their `Host` names) |
-| `HARNESS_WEB_ALLOWED_HOSTS` | unset | Exact additional `Host` header values for the web UI |
+| --- | --- | --- |
+| `HARNESS_HOME` | `~/.harness` | Configuration and credentials |
+| `HARNESS_DATA` | `$HARNESS_HOME/chat` | Durable chat, queue, and process state |
+| `HARNESS_CWD` | current directory | Working directory for the main actor |
+| `HARNESS_WORKERS` | `5` | Number of managed model workers |
+| `HARNESS_SERVE_PORT` | `8080` | Loopback web port |
+| `HARNESS_PROVIDER` | first ready provider | Provider for turns |
+| `HARNESS_MODEL` | provider default | Model for turns |
+| `HARNESS_SUMMARY_PROVIDER` | turn provider | Provider for summaries |
+| `HARNESS_SUMMARY_MODEL` | turn model, or the selected summary provider's default | Model for summaries |
+| `MEMORY_VIEW_HIGH` / `MEMORY_VIEW_LOW` | `128000` / `64000` | Turn-view byte budgets |
+| `MEMORY_COMPACT_HIGH` / `MEMORY_COMPACT_LOW` | `32000` / `16000` | Compaction-view byte budgets |
 
-Provider-specific env vars (API keys, endpoints, etc.) are listed by `hs help` and documented via each provider's `--env` flag.
-
-## Extending
-
-Copy an example hook or tool, make it executable, drop it in a `.harness/` directory:
+To serve through a trusted reverse proxy, configure the exact public origin:
 
 ```bash
-# Add a cost tracker to your home config
-mkdir -p ~/.harness/hooks.d/receive
-cp examples/hooks.d/receive/20-cost ~/.harness/hooks.d/receive/
-chmod +x ~/.harness/hooks.d/receive/20-cost
-
-# Add a project-specific tool
-mkdir -p .harness/tools
-cp examples/tools/web_fetch .harness/tools/
-chmod +x .harness/tools/web_fetch
-
-# Add project context (agents.md standard)
-cat > AGENTS.md << 'EOF'
-This is a Rust project using tokio for async. Run tests with `cargo test`.
-EOF
+export HARNESS_WEB_ALLOWED_ORIGINS='https://agent.example-tailnet.ts.net'
+harness restart web
 ```
 
-The agent itself can extend the harness by writing new tools or hooks to `.harness/` directories during a session. This is intentional.
+`HARNESS_WEB_ALLOWED_HOSTS` permits additional exact proxy Host values. The
+listener stays on loopback. See [plugins/web/README.md](plugins/web/README.md)
+for the HTTP endpoints and proxy rules.
 
-## License
+## Verify
 
-MIT — see [LICENSE](LICENSE) for details.
+```bash
+spec/run
+SPEC_DIR=spec bash spec/tests/NAME/test.sh
+```
+
+Tests use temporary stores and mock providers. The web test also exercises the
+browser client when Node is available; Node is not a runtime dependency.
+
+MIT — see [LICENSE](LICENSE).

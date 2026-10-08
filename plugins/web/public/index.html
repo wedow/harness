@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harness</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header>
+      <div><h1>Harness</h1><p>One continuous chat.</p></div>
+    </header>
+    <section id="history" aria-label="Chat history">
+      <button id="older" class="older" type="button">Load earlier messages</button>
+      <p id="empty" class="empty">Your messages and completed replies will appear here.</p>
+      <div id="messages" role="log" aria-live="polite" aria-relevant="additions"></div>
+    </section>
+    <form id="compose">
+      <div id="activity" class="activity" aria-live="polite">
+        <span id="status">Loading activity…</span>
+        <span id="connection" class="connection">Connecting…</span>
+      </div>
+      <ul id="jobs" class="jobs" hidden></ul>
+      <label for="draft">Message</label>
+      <textarea id="draft" rows="3" placeholder="What would you like to work on?" required></textarea>
+      <div class="compose-actions">
+        <span>Replies appear when ready.</span>
+        <div class="compose-buttons">
+          <button id="cancel" type="button" title="Stop current task">Stop</button>
+          <button type="submit">Send</button>
+        </div>
+      </div>
+      <p id="notice" class="notice" role="status"></p>
+    </form>
+  </main>
+</body>
+</html>

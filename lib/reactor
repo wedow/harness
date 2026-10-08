@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+store_init
+trap 'exit 0' TERM INT
+while :; do
+  code="$(code_snapshot)" || { sleep .2; continue; }
+  HARNESS_ROOT="${code}" setsid "${code}/lib/tick" </dev/null >>"${HARNESS_DATA}/logs/reactor.log" 2>&1 5>&- 6>&- 7>&- 8>&- 9>&- &
+  wait "$!" || true
+  sleep "${HARNESS_TICK_INTERVAL:-0.2}"
+done

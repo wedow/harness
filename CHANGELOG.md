@@ -15,6 +15,25 @@ and this project adheres to Semantic Versioning.
 
 ### Removed
 
+## [0.5.0] - 2026-10-08
+
+### Added
+
+- Added one durable chat with immutable events, persisted actor state, filesystem request/job queues, and separate web, reactor, and model-worker processes. Managed components support independent start, stop, and restart; foreground commands support external supervision.
+- Added binary-tree memory, queued summary work, saved views with batched merging, and `zoom`/`date` tools for retrieving earlier messages. Fresh turns use memory views and chronological recent messages; truncated responses preserve their exact provider protocol state.
+- Added detached tools and child actors whose completed results become inbox observations. Requests and jobs retain code snapshots; interrupted tools with uncertain outcomes are reported rather than automatically repeated.
+- Added a polling single-chat frontend with whole committed replies, cursor-based history paging, persistent drafts, stable submission IDs, automatic reconnect/retry, status, and cancellation.
+
+### Changed
+
+- Standardized provider requests/responses around canonical text/tool-call blocks, normalized stop reasons, and usage fields. Provider-specific transport and OAuth remain in executable plugins.
+- Moved runtime responsibilities into top-level `lib/` modules. Configuration remains in `HARNESS_HOME`; the new durable store defaults to `HARNESS_DATA=$HARNESS_HOME/chat` and leaves existing sessions untouched.
+- Changed the no-argument command to start the managed runtime. The runtime now requires Linux, `socat`, util-linux, and coreutils; release packages include `lib/` and preserve code-snapshot root overrides.
+
+### Removed
+
+- Removed the session-based agent/REPL/ACP command flow, streaming tool-dispatch pipeline, Markdown session message storage, session/title UI, and SSE/Datastar browser transport.
+
 ## [0.4.0] - 2026-10-07
 
 ### Added

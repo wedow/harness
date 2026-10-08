@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+# Deterministic canonical provider. Never opens a network connection.
+set -euo pipefail
+case "${1:-}" in
+ --describe) printf 'Offline fixture\n'; exit 0 ;;
+ --ready) exit 0 ;;
+ --defaults) printf 'model=fixture\n'; exit 0 ;;
+ --env) exit 0 ;;
+esac
+input="$(cat)"
+if [[ -n "${FIXTURE_COUNTER:-}" ]]; then
+  (
+    exec 4>"${FIXTURE_COUNTER}.lock"; flock 4
+    active="$(cat "${FIXTURE_COUNTER}.active" 2>/dev/null || printf 0)"; active=$((active+1))
+    printf '%s\n' "${active}" >"${FIXTURE_COUNTER}.active"
+    peak="$(cat "${FIXTURE_COUNTER}.peak" 2>/dev/null || printf 0)"
+    (( active<=peak )) || printf '%s\n' "${active}" >"${FIXTURE_COUNTER}.peak"
+  )
+  cleanup_counter() (
+    exec 4>"${FIXTURE_COUNTER}.lock"; flock 4
+    active="$(cat "${FIXTURE_COUNTER}.active")"; printf '%s\n' "$((active-1))" >"${FIXTURE_COUNTER}.active"
+  )
+  trap cleanup_counter EXIT
+  trap 'exit 143' TERM INT
+fi
+if [[ -n "${FIXTURE_REQUEST_LOG:-}" ]]; then
+  printf '%s' "${input}" | jq -c --arg actor "${HARNESS_ACTOR:-main}" '{actor:$actor,payload:.}' >>"${FIXTURE_REQUEST_LOG}"
+fi
+last="$(printf '%s' "${input}" | jq -r '.messages[-1].content // ""')"
+if [[ "${last}" == Compaction:* ]]; then
+  printf '{"blocks":[{"type":"text","text":"A retained summary of this message."}],"stop":"end","usage":{}}\n'
+  exit 0
+fi
+if [[ -n "${FIXTURE_GATE:-}" && "${last}" == gated* ]]; then
+  printf '%s\n' "$$" >>"${FIXTURE_GATE}.started"
+  while [[ ! -f "${FIXTURE_GATE}" ]]; do sleep 0.05; done
+fi
+if [[ "${last}" == 'launch tool' ]]; then
+  jq -cn --arg command 'printf ran >> "$FIXTURE_SIDE_EFFECT"; sleep 0.5; printf "fixture result"' '{blocks:[{type:"text",text:"I am starting the command."},{type:"tool_call",id:"call-1",name:"bash",input:{command:$command}}],stop:"tool_calls",usage:{}}'
+elif [[ "${last}" == 'launch interrupted tool' ]]; then
+  jq -cn --arg command 'printf ran >> "$FIXTURE_SIDE_EFFECT"; touch "$FIXTURE_TOOL_GATE.started"; while [[ ! -f "$FIXTURE_TOOL_GATE" ]]; do sleep .1; done' '{blocks:[{type:"tool_call",id:"call-1",name:"bash",input:{command:$command}}],stop:"tool_calls",usage:{}}'
+elif [[ "${last}" == 'launch child' ]]; then
+  printf '{"blocks":[{"type":"tool_call","id":"child-call","name":"agent","input":{"name":"helper","prompt":"child task"}}],"stop":"tool_calls","usage":{}}\n'
+elif [[ "${last}" == 'child task' ]]; then
+  printf '{"blocks":[{"type":"text","text":"The child finished its task."}],"stop":"end","usage":{}}\n'
+elif [[ "${last}" == *'"status":"queued"'* ]]; then
+  printf '{"blocks":[{"type":"text","text":"Work is running in the background."}],"stop":"end","usage":{}}\n'
+elif [[ "${last}" == *'<observation '* ]]; then
+  printf '{"blocks":[{"type":"text","text":"I received the finished work."}],"stop":"end","usage":{}}\n'
+else
+  jq -cn --arg text "Reply: ${last}" '{blocks:[{type:"text",text:$text}],stop:"end",usage:{}}'
+fi

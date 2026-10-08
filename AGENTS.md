@@ -1,120 +1,159 @@
 # AGENTS.md
 
-This file provides guidance to agents when working with code in this repository.
+Guidance for agents working in this repository. Follow the user's current
+request and applicable working agreements within the instruction hierarchy.
 
-## What This Is
+## What this is
 
-Harness is a minimal agent loop in bash. The core script (~100 SLOC) is a bootstrap, hook pipeline runner (`call`), state follower, and CLI dispatch. Even source discovery is hookable — the `sources` stage lets plugins control which directories participate. Everything else — session management, provider discovery, tool discovery, message assembly, API calls, response parsing, tool execution, prompt loading — lives in hooks and plugins that can be written in any language.
+Harness runs one durable chat with tree-based memory. It is a Bash application
+with separate web, reactor, and model-worker processes. Filesystem queues and
+immutable events connect the components. Tools and provider executables remain
+extensible without a package manager or language runtime.
 
-Dependencies: bash 4+, jq, curl. No package manager, no language runtime.
+Requires Linux, Bash 4+, `jq`, `curl`, `socat`, `flock`, `setsid`, `timeout`, and
+`sync`. There is no per-session CLI, REPL, ACP adapter, or token-stream frontend.
 
 ## Commands
 
 ```bash
-# Run the agent
-bin/harness "do something"           # one-shot (args = message)
-echo "do X" | bin/harness            # one-shot (stdin)
-bin/harness                          # interactive REPL
-bin/harness <session-id>             # resume session
+bin/harness                          # start managed components
+bin/harness start [component]        # all, web, reactor, worker-N
+bin/harness stop [component]
+bin/harness restart [component]
+bin/harness serve [port]             # foreground web only
+bin/harness reactor                  # foreground event processor
+bin/harness worker N                 # foreground model worker
+bin/harness submit "do something"    # append input, return an acknowledgement
+bin/harness history                  # committed main-chat events
+bin/harness status                   # component, actor, queue, and job status
+bin/harness cancel                   # stop the current main task
+bin/harness tools
+bin/harness auth [subcommand]
+bin/harness help
+bin/harness version
 
-# Inspect
-bin/harness tools                    # list discovered tools
-bin/harness hooks [stage]            # list discovered hooks
-bin/harness session list             # list sessions
-bin/harness session show <id>        # inspect session
-
-# Tests
-spec/run                             # run all tests
-SPEC_DIR=spec bash spec/tests/NAME/test.sh  # single test
+spec/run
+SPEC_DIR=spec bash spec/tests/NAME/test.sh
 ```
 
-The `bin/hs` symlink is an alias for `bin/harness`.
+`bin/hs` is an alias for `bin/harness`. The managed start defaults to one web
+server, one reactor, and five workers (`HARNESS_WORKERS`). The default web port
+is 8080 (`HARNESS_SERVE_PORT`).
 
-## Architecture
+## Ownership and data flow
 
-### The State Machine
+`HARNESS_HOME` defaults to `~/.harness` for configuration and credentials.
+`HARNESS_DATA` defaults to `$HARNESS_HOME/chat` for durable data. Existing session
+stores are separate and must not be modified or silently migrated.
 
-The core loop is a pure state follower. It dispatches hooks for the current state, reads `next_state` from the hook output, and transitions. The core has no built-in transitions — state flow is entirely declared by hooks. An empty or absent `next_state` stops the loop. After the loop ends, `output` is read from the terminal state's result and printed.
+The HTTP process validates requests, submits durable events, and reads feeds and
+status. It never owns a model request or agent task. Browser clients poll whole
+committed events, preserve drafts, and retry submissions with stable IDs. Keep
+this interface free of token, partial-message, and SSE streaming.
 
-```
-start → assemble → send → receive → done
-                    ↑                  │
-                    │   tool_exec → tool_done
-                    │                  │
-                    └──────────────────┘
-```
+The journal serializes publication under `flock`. Event IDs deduplicate retries;
+reusing an ID with different content is an error. Publish complete records
+atomically. Global event sequence numbers and per-actor memory message IDs are
+different identifiers.
 
-This diagram is emergent from hooks, not hardcoded. Hooks drive iteration: `tool_exec` pops one call, `tool_done` routes back to `tool_exec` or `assemble`.
+The reactor owns `state.json` and actor transitions. It consumes ordered events,
+updates projections, schedules requests, and launches background jobs. Workers
+claim queued model requests, make provider calls, and publish results. Tool jobs
+run independently and report through events. Parent observations and named
+subagent reports go into the inbox instead of blocking the parent on a tool.
+Cancellation advances the actor's generation. Older queued work and observations
+must not restart it; already committed messages remain in the permanent history.
 
-Discovery is fully dynamic and hookable — `_refresh_sources` runs every loop iteration, calling the `sources` stage hooks to rebuild the source list. Plugins can be added/removed at runtime.
+Each request/job pins its payload, provider/model selection, tool paths, and planning code
+snapshot. Preserve that version for in-flight work. New scheduling can load
+updated code. Do not leak ownership locks into unrelated long-lived processes.
+HTTP retries preserve the canonical payload and select the current transport
+generation; worker deployment can fix unfinished requests without recreating them.
+An interrupted tool can already have caused an external effect: report an unknown
+outcome rather than blindly replaying it.
 
-### Streaming & Parallel Tool Dispatch
+A fresh turn uses the saved memory prefix plus the chronological original actor
+messages since the first pending input, including interleaved replies and tool
+launches. In-turn provider/tool messages remain separate protocol state. Preserve
+tool-call/result identities and observation provenance; synthetic control
+messages are not user orders.
 
-Streaming output is written to `${HARNESS_SESSION}/.stream` as JSONL. Providers append single-line JSON events during each turn — `text` (token deltas), `thinking` (reasoning), `tool_start`/`tool_done` (tool execution), `stop` (turn end), `error`, `done` (session end). The send hook passes `--stream` to any provider that supports it. The filesystem is the streaming interface.
+## Memory invariants
 
-During streaming, the send hook dispatches tool calls for parallel execution via a fifo. A background dispatcher reads completed tool calls and executes them immediately. Results are written to `${session}/.tool_dispatch/`. The `tool_exec` hook checks for pre-computed results before executing — making pre-dispatched tools instant. Anthropic dispatches per-tool during streaming (at `content_block_stop`), while OpenAI dispatches all tools after the stream ends (no per-tool completion event in the protocol).
+Each actor has memory under `actors/<id>/memory/`:
 
-### Provider Resolution
+- `main/YYYY-MM-DD.jsonl`: append-only message records.
+- `tree/YYYY-MM-DD.jsonl`: immutable completed nodes.
+- `view.json`: saved turn view; `compact-view.json`: saved compaction view.
+- Indexed records, ready queues, and recovery state support incremental work.
 
-Provider resolution is a hookable `resolve` stage, run once before the agent loop. Three hooks form a pipeline: `10-settings` (reads `settings.conf`), `20-detect` (auto-detects first ready provider), `30-defaults` (reads model defaults from variant conf or `--defaults`). Override any step by placing a same-named hook in a higher-priority source dir.
+A leaf covers one message. A node at level `l`, index `i` covers `2^l` messages
+starting at `i * 2^l`; only aligned adjacent siblings can merge. Summaries target
+512 UTF-8 bytes. Measure bytes with `jq` or `wc -c`, not Bash character counts.
+Preserve original input, names, corrections, exact paths, and progress status.
+Reasoning must not enter memory.
 
-### Plugin Discovery & Provider Scoping
+The turn view grows from 64,000 to 128,000 bytes and then shrinks in one batch;
+the compaction view uses 16,000 to 32,000 bytes. Rank eligible pairs by age from
+their last message, divided by their size, with older pairs breaking ties.
+Only built parents may be substituted. Save live views across restarts; never
+reconstruct them from the log as a routine startup operation.
 
-Source discovery is a hookable `sources` stage. The core bootstraps with bundled plugins + `~/.harness`, then runs `call sources` — a pipeline of hooks that build the full source list. The default hooks:
+Queue ready summaries as dependencies complete. Do not scan the entire tree for
+work on every tick. A fresh turn must not see placeholders or partial messages.
+The `zoom` and `date` tools provide memory access; child actors retain independent
+logs and report to their parent.
 
-- `30-walk-dirs` — walks from CWD upward to `/`, collecting `.harness/` directories and plugin packs. Local overrides global by basename.
-- `40-scope-providers` — filters provider plugins by `HARNESS_PROVIDER`. When `HARNESS_PROVIDER` is empty, all providers pass through (needed for auto-detection).
+## Code layout
 
-Override either by placing a same-named hook in a higher-priority source dir.
+- `bin/harness`: CLI dispatch.
+- `lib/bootstrap.sh`: configuration, executable discovery, hooks, shared helpers.
+- `lib/store.sh`: event publication, durable submit/cancel, feed, status.
+- `lib/runtime.sh`: projection, actor transitions, request/job scheduling.
+- `lib/memory.sh`: message/tree storage, views, summaries, zoom/date.
+- `lib/provider.sh`: provider resolution and canonical protocol validation.
+- `lib/services.sh`: component management.
+- `lib/{component,reactor,worker,request,job,tick}`: foreground supervisors,
+  reactor ticks, model workers/requests, and tool-job execution.
+- `plugins/core/tools/`: shell and file tools.
+- `plugins/memory/`: zoom/date tools.
+- `plugins/subagents/`: asynchronous child actors.
+- `plugins/skills/`: skill discovery/loading.
+- `plugins/{anthropic,openai,chatgpt}/providers/`: provider transports/variants.
+- `plugins/auth/`: credential commands and OAuth integration.
+- `plugins/web/`: socat HTTP process, framing/security, static browser client.
 
-### Five Plugin Types
+Discovery combines bundled plugin directories, `HARNESS_HOME`, and ancestor
+`.harness/` directories, including their plugin packs. More-local executables
+with the same basename override earlier ones. Prompts combine discovered prompt
+fragments and nearby `AGENTS.md` files. Hooks are sorted executable JSON
+pipelines for extension points, rather than the old state-machine transition
+protocol.
 
-**Commands** (`commands/`): CLI subcommands discoverable via the same source walk as other plugin types. Protocol: `--describe` returns one-line help text; otherwise executed with remaining args. Local overrides global by basename. Built-in: `agent`, `repl`, `acp`, `acp-stream`, `session`, `tools`, `hooks`, `help`, `version`. On a TTY with no args, the default command is `repl`; otherwise `agent` (headless one-shot). Unrecognized first arg also falls back to `agent`.
+Tools support `--schema`, `--describe`, and `--exec` (JSON stdin, stdout result).
+Providers accept the canonical request and return normalized blocks and stop
+reasons. Introspection flags and variant `.conf` files support discovery and
+configuration. Protocol details belong in `docs/PROTOCOLS.md` and
+`docs/PROVIDER_PROTOCOL.md`.
 
-**Tools** (`tools/`): Executables responding to `--schema`, `--describe`, `--exec`. Input is JSON on stdin via `--exec`, output on stdout. Language-agnostic. Core tools: `bash`, `read_file`, `write_file`, `edit_file`. Additional bundled tools: `agent` (spawn subagent sessions), `skill` (load skill instructions).
+## Working conventions and verification
 
-**Hooks** (`hooks.d/<stage>/`): Pipeline executables named `NN-name` (numeric prefix for sort order). Each hook's stdout feeds the next's stdin. Non-zero exit aborts the chain. Stages: `resolve`, `start`, `assemble`, `send`, `receive`, `tool_exec`, `tool_done`, `error`, `done`.
+Use `set -euo pipefail` in Bash scripts and local variables in functions. Use
+`jq` for JSON. Keep I/O, scheduling, memory algorithms, provider translation, and
+presentation separate. Prefer explicit state and focused executable contracts.
 
-**Providers** (`providers/`): Receive assembled payload JSON on stdin, output raw API response. Support introspection flags: `--describe`, `--ready`, `--defaults`, `--env`, `--stream` (SSE streaming with real-time display). If `HARNESS_PROVIDER` is not set, harness auto-selects the first provider whose `--ready` exits 0 (via the hookable `resolve` stage). Built-in: `anthropic`, `openai`, `chatgpt`, `claude`. The `chatgpt` provider uses OAuth2 PKCE to authenticate with ChatGPT accounts (Plus/Pro/Team/Enterprise) and speaks the Responses API via SSE streaming to `chatgpt.com/backend-api/codex/responses`. The `claude` provider uses OAuth2 PKCE to authenticate with Claude.ai subscriptions (Pro/Team/Enterprise) and calls the standard Messages API with Bearer auth. **Variants** are `.conf` files that reuse a provider's protocol with different endpoint config (url, auth, model, max_tokens, stream). Bundled variants: `groq`, `deepseek`, `openrouter` (OpenAI-compatible), `fireworks`, `zai` (Anthropic-compatible).
+Inspect Git status before editing and preserve concurrent work. Stage specific
+files or hunks, review the final diff, and keep commits focused. Do not add tool
+attribution or co-author trailers unless requested.
 
-**Prompts** (`AGENTS.md` + `prompts/*.md`): `AGENTS.md` files follow the [agents.md standard](https://agents.md) — placed at the project root (parent of `.harness/`), not inside it. The `30-prompts` assemble hook concatenates them (global first, local last). Additional prompt fragments go in `.harness/prompts/*.md`.
+Run relevant tests and Bash syntax checks for code changes. Use mock providers
+and temporary `HARNESS_HOME`/`HARNESS_DATA` paths; tests must not touch the user's
+live chat or credentials. Do not make live API calls without task authorization.
+ShellCheck should specify Bash for sourced files. Browser-client tests may use
+Node when installed; it is optional and not an application dependency.
 
-### Canonical Message Format
-
-Session messages use a provider-agnostic format. Provider-specific hooks translate to/from this format, enabling mid-session provider switching. Key fields: `tool_call` (not tool_use), `call_id` (not tool_use_id), `stop: end|tool_calls|length|error` (normalized), `error` (not is_error).
-
-### Session State is Filesystem
-
-Sessions live in `<sessions-dir>/<id>/messages/` as numbered markdown files with YAML frontmatter. Tool calls are stored as fenced code blocks with `tool_call` info strings.
-
-### Key Files
-
-- `bin/harness` — core: bootstrap, `call` (hook pipeline runner), state follower, CLI dispatch (~100 SLOC)
-- `plugins/core/commands/` — built-in CLI commands (agent, repl, acp, acp-stream, session, tools, hooks, help, version)
-- `plugins/core/lib/session.sh` — shared session helpers (sourced by agent, repl, acp)
-- `plugins/core/hooks.d/` — provider-agnostic hooks (resolve, send, tool_exec, tool_done, assemble/tools, assemble/prompts)
-- `plugins/anthropic/hooks.d/` — Anthropic-specific hooks (assemble/messages, receive/save)
-- `plugins/anthropic/providers/anthropic` — Anthropic API call (API key)
-- `plugins/anthropic/providers/claude` — Claude.ai OAuth (Bearer auth, shares anthropic hooks)
-- `plugins/openai/hooks.d/` — OpenAI-specific hooks (assemble/messages, receive/save)
-- `plugins/openai/providers/openai` — OpenAI-compatible API call (works with ollama, llama.cpp, vLLM)
-- `plugins/openai/providers/*.conf` — OpenAI-compatible variants (groq, deepseek, openrouter)
-- `plugins/anthropic/providers/*.conf` — Anthropic-compatible variants (fireworks, zai)
-- `plugins/chatgpt/providers/chatgpt` — ChatGPT Responses API (OAuth, streams SSE)
-- `plugins/chatgpt/hooks.d/` — ChatGPT-specific hooks (assemble/messages, receive/save, auth-set/oauth)
-- `plugins/core/tools/` — five built-in tools
-- `plugins/subagents/` — `agent` tool + prompt fragment for spawning child sessions
-- `plugins/skills/` — `skill` tool + `35-skills` assemble hook for skill discovery
-
-## Conventions
-
-- All bash scripts use `set -euo pipefail` and `local` variables
-- All JSON manipulation goes through `jq` — no bash JSON parsing
-- Tools and hooks are executable files, not sourced scripts
-- Hook naming: `NN-name` where NN is a two-digit sort key
-- Command protocol: `--describe` (one-line help), otherwise executed with remaining args
-- Tool protocol: `--schema` (JSON), `--describe` (one-line), `--exec` (JSON stdin → stdout)
-- Provider protocol: `--describe`, `--ready`, `--defaults`, `--env`, `--stream` (SSE), plus stdin→stdout for execution
-- Hooks receive `HARNESS_SOURCES` (colon-separated active source dirs) for plugin discovery
-- Full protocol docs in `docs/PROTOCOLS.md`
-- `HARNESS_CWD` tracks the session's original working directory; tools use it
+Favor behavior checks for replay, duplicate IDs, interrupted publication,
+ordering, locks, cancellation, summary boundaries, UTF-8 byte limits, and
+provider/tool identity preservation. Report exactly what was checked and any
+remaining gaps. Documentation/configuration changes need direct validation;
+avoid broad unrelated test runs.

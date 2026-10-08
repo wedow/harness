@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # spec/run — test runner for harness. walks spec/tests/*/, runs test.sh in each.
 set -euo pipefail
+export CDPATH=''
 
 SPEC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 export SPEC_DIR

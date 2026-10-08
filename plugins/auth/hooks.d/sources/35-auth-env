@@ -2,15 +2,8 @@
 # 35-auth-env — merge .auth.json from discovered sources into a cache for providers
 set -euo pipefail
 
+source "${HARNESS_ROOT}/lib/provider.sh"
 input="$(cat)"
-
-merged="{}"
-while IFS= read -r src; do
-  [[ -f "${src}/.auth.json" ]] || continue
-  merged="$(jq -s '.[0] * .[1]' <(echo "${merged}") "${src}/.auth.json")"
-done < <(echo "${input}" | jq -r '.sources[]')
-
-_tmp="$(mktemp "${HARNESS_HOME}/.auth-cache.json.XXXXXX")"
-echo "${merged}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${HARNESS_HOME}/.auth-cache.json"
-
-echo "${input}"
+export HARNESS_SOURCES="$(printf '%s' "${input}" | jq -r '.sources | join(":")')"
+harness_auth_refresh
+printf '%s\n' "${input}"

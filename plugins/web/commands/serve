@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
-# serve — minimal HTTP server for harness sessions (pure server-rendered).
+# serve — the single-chat HTTP frontend, independent of the reactor/workers.
 # Transport: socat, execing the bash handler per connection with the
 # socket on stdin/stdout.
 set -euo pipefail
 
-case "${1:-}" in --describe) echo "serve the web UI (default http://127.0.0.1:8080)"; exit 0 ;; esac
+case "${1:-}" in --describe) echo "serve the chat (default http://127.0.0.1:8080)"; exit 0 ;; esac
 
-source "${HARNESS_ROOT}/bin/harness" # HARNESS_SESSIONS resolution etc.
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
 
 PORT="${1:-${HARNESS_SERVE_PORT:-8080}}"
 HANDLER="${HARNESS_ROOT}/plugins/web/lib/handler"
 
+[[ "${PORT}" =~ ^[0-9]{1,5}$ ]] && (( 10#${PORT} > 0 && 10#${PORT} <= 65535 )) || {
+  echo 'harness serve: port must be between 1 and 65535' >&2; exit 1;
+}
+store_init
+
 echo "harness serve: http://127.0.0.1:${PORT}" >&2
 
-command -v socat >/dev/null 2>&1 || _die "required: socat"
+command -v socat >/dev/null 2>&1 || { echo 'harness serve: required: socat' >&2; exit 1; }
 exec socat "TCP-LISTEN:${PORT},bind=127.0.0.1,fork,reuseaddr" \
   "EXEC:${HANDLER},nofork"

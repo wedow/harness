@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  --describe) echo 'look up the date of a permanent chat message' ;;
+  --schema)
+    cat <<'JSON'
+{"name":"date","description":"Return the date and time of permanent memory message id.","input_schema":{"type":"object","properties":{"id":{"type":"integer","minimum":0},"actor":{"type":"string","description":"Optional actor identifier; defaults to the current actor."}},"required":["id"],"additionalProperties":false}}
+JSON
+    ;;
+  --exec)
+    source "${HARNESS_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)}/lib/memory.sh"
+    data="$(cat)"
+    printf '%s' "${data}" | jq -e 'type=="object" and has("id")' >/dev/null
+    actor="$(printf '%s' "${data}" | jq -r --arg actor "${HARNESS_ACTOR:-main}" '.actor // $actor')"
+    id="$(printf '%s' "${data}" | jq -r '.id')"
+    memory_date "${actor}" "${id}"
+    ;;
+  *) echo 'usage: date --schema | --describe | --exec' >&2; exit 1 ;;
+esac

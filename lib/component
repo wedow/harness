@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+store_init
+name="$1"; shift
+valid_id "${name}" || _die 'invalid component name'
+exec 5>"${HARNESS_DATA}/locks/component-${name}"
+flock -n 5 || exit 0
+jq -cn --argjson pid "$$" --arg start "$(process_start "$$")" '{pid:$pid,start:$start}' | atomic_write "${HARNESS_DATA}/components/${name}.json"
+child=""
+cleanup() {
+  trap - TERM INT
+  if [[ -n "${child}" ]]; then kill -TERM "${child}" 2>/dev/null || true; wait "${child}" 2>/dev/null || true; child=""; fi
+  rm -f "${HARNESS_DATA}/components/${name}.json"
+}
+trap 'cleanup; exit 0' TERM INT
+trap cleanup EXIT
+"$@" 5>&- & child=$!
+wait "${child}" || exit "$?"
+child=""

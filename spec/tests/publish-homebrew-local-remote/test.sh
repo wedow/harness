@@ -6,6 +6,7 @@ setup
 repo_root="$(cd "${HARNESS_ROOT}" && pwd)"
 test_dir="${_tmpdir}/repo"
 mkdir -p "$test_dir/scripts"
+mkdir -p "$test_dir/lib"
 cp "$repo_root/scripts/publish-homebrew.sh" "$test_dir/scripts/"
 cp "$repo_root/scripts/release-manifest.sh" "$test_dir/scripts/"
 
@@ -45,3 +46,9 @@ grep -q 'sha256 "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde
   cat "$formula"
   exit 1
 }
+
+grep -q 'prefix.install "lib"' "$formula"
+grep -q 'depends_on :linux' "$formula"
+for dependency in socat util-linux coreutils; do grep -q "depends_on \"${dependency}\"" "$formula"; done
+grep -qF 'HARNESS_ROOT="${HARNESS_ROOT:-#{prefix}}"' "$formula"
+if grep -q 'readonly HARNESS_ROOT' "$formula"; then echo 'snapshot root cannot be readonly'; exit 1; fi

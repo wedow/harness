@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Requests remain queued while claimed. An orphan retains its HTTP slot lock.
+set -euo pipefail
+source "${HARNESS_ROOT}/lib/bootstrap.sh"
+source "${HARNESS_ROOT}/lib/store.sh"
+store_init
+slot="${1:-1}"
+[[ "${slot}" =~ ^[1-9][0-9]*$ ]] && (( slot<=${HARNESS_WORKERS:-5} )) || _die 'worker slot exceeds HARNESS_WORKERS'
+exec 9>"${HARNESS_DATA}/locks/model-slot-${slot}"; flock 9
+child=""
+trap 'if [[ -n "${child}" ]]; then terminate_group "${child}"; wait "${child}" 2>/dev/null || true; fi; exit 0' TERM INT
+while :; do
+  picked=false; priorities=(0-turn 1-summary)
+  [[ "${last_kind:-}" != 0-turn ]] || priorities=(1-summary 0-turn)
+  for priority in "${priorities[@]}"; do
+    for file in "${HARNESS_DATA}/queue/requests/${priority}/"*.json; do
+      [[ -f "${file}" ]] || continue
+      id="${file##*/}"; id="${id%.json}"
+      exec 8>"${HARNESS_DATA}/locks/request-${id}"
+      if ! flock -n 8; then exec 8>&-; continue; fi
+      if [[ ! -f "${file}" ]]; then exec 8>&-; continue; fi
+      # Payloads and tool definitions stay frozen; a retried HTTP request uses
+      # the current transport implementation after a worker deployment.
+      code="$(code_snapshot)" || { exec 8>&-; sleep .2; continue; }
+      HARNESS_ROOT="${code}" setsid "${code}/lib/request" "${id}" "${file}" </dev/null >>"${HARNESS_DATA}/logs/request-${id}.log" 2>&1 & child=$!
+      wait "${child}" || true
+      # A killed request leader can leave curl alive. Drain that group before
+      # reusing the slot, even though this worker still owns the lifetime lock.
+      terminate_group "${child}"
+      child=""; exec 8>&-
+      picked=true; last_kind="${priority}"; break 2
+    done
+  done
+  [[ "${picked}" == true ]] || sleep 0.2
+done

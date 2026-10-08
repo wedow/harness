@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # chatgpt — provider plugin for the ChatGPT Responses API with OAuth auth.
-# Receives assembled payload JSON on stdin, outputs the API response.
+# Canonical JSON in and normalized JSON out; SSE is buffered privately.
 set -euo pipefail
 
 [[ "${1:-}" == "--describe" ]] && { echo "ChatGPT Responses API (OAuth)"; exit 0; }
@@ -22,11 +22,12 @@ CHATGPT_MAX_TOKENS  max response tokens (131072)
 ENVEOF
 exit 0; }
 
-_stream=false
-[[ "${1:-}" == "--stream" ]] && { _stream=true; shift; }
+[[ $# == 0 ]] || { echo 'unsupported provider option' >&2; exit 1; }
+source "${HARNESS_ROOT:-$(cd "$(dirname "$0")/../../.." >/dev/null && pwd)}/lib/provider.sh"
 
 cache="${HARNESS_HOME:-${HOME}/.harness}/.auth-cache.json"
 [[ -f "${cache}" ]] || { echo "no auth cache — run: hs auth set chatgpt" >&2; exit 1; }
+_provider_auth_lock
 
 # Read credentials
 access_token="$(jq -r '.chatgpt[0].access_token // empty' "${cache}")"
@@ -108,189 +109,74 @@ if [[ -n "${refresh_token}" && "${expires_at}" != "0" && "${now}" -ge "${expires
   echo "${updated}" > "${_tmp}" && chmod 600 "${_tmp}" && mv -f "${_tmp}" "${cache}"
   echo "refreshed chatgpt token" >&2
 fi
+_provider_auth_unlock
 
-payload="$(cat)"
-
-model="$(echo "${payload}" | jq -r '.model // ""')"
-[[ -z "${model}" ]] && model="${HARNESS_MODEL}"
-
-system="$(echo "${payload}" | jq -r '.system // ""')"
-input_items="$(echo "${payload}" | jq -c '.messages // []')"
-tools="$(echo "${payload}" | jq -c '.tools // []')"
-
-# Translate tool schemas: canonical (name/description/input_schema) → Responses API format
-responses_tools="$(echo "${tools}" | jq -c '[.[] | {
-  type: "function",
-  name: .name,
-  description: .description,
-  parameters: .input_schema
-}]')"
-
-# Build the request
-CHATGPT_MAX_TOKENS="${CHATGPT_MAX_TOKENS:-131072}"
-
-request="$(echo "${input_items}" | jq -c \
-  --arg model "${model}" \
-  --arg instructions "${system}" \
-  --argjson tools "${responses_tools}" \
-  --argjson max_output_tokens "${CHATGPT_MAX_TOKENS}" \
-  '{model: $model, instructions: $instructions, input: ., store: false, stream: true,
-    max_output_tokens: $max_output_tokens}
-   | if ($tools | length) > 0 then . + {tools: $tools} else . end'
-)"
-
-# Add reasoning if HARNESS_THINKING is set
-if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != "off" ]]; then
-  _re="${HARNESS_THINKING}"
-  [[ "${_re}" == "max" ]] && _re="high"
-  request="$(echo "${request}" | jq -c --arg effort "${_re}" '. + {reasoning: {effort: $effort}}')"
+payload="$(_provider_validate_request)"
+request="$(printf '%s' "${payload}" | jq -ce --arg model "${HARNESS_MODEL:-}" --argjson budget "${CHATGPT_MAX_TOKENS:-131072}" '
+  def assistant_items:
+    if .provider_state.protocol == "chatgpt" then
+      if (.provider_state.output | type) == "array" and (.provider_state.output | length) > 0 then .provider_state.output[]
+      else error("invalid native continuation") end
+    else .blocks[] | if .type == "text" then
+      {type:"message",role:"assistant",content:[{type:"output_text",text:.text}]}
+      else {type:"function_call",call_id:.id,name:.name,arguments:(.input|tojson)} end end;
+  . as $p
+  | {model:(.model // $model),instructions:(.system // ""),store:false,stream:true,
+     include:["reasoning.encrypted_content"],max_output_tokens:$budget,
+     input:[.messages[] | if .role == "user" then
+        {type:"message",role:"user",content:[{type:"input_text",text:.content}]}
+       elif .role == "tool" then {type:"function_call_output",call_id:.call_id,output:.content}
+       else assistant_items end]}
+  | if ($p.tools // [] | length) > 0 then .tools=[$p.tools[] |
+      {type:"function",name:.name,description:.description,parameters:.input_schema}] else . end
+  ' 2>/dev/null)" || { echo 'invalid ChatGPT message continuation' >&2; exit 1; }
+if [[ -n "${HARNESS_THINKING:-}" && "${HARNESS_THINKING}" != off ]]; then
+  effort="${HARNESS_THINKING}"
+  [[ "${effort}" != max ]] || effort=high
+  request="$(printf '%s' "${request}" | jq -c --arg effort "${effort}" '.reasoning={effort:$effort}')"
 fi
 
-if [[ "${_stream}" == true ]]; then
-  # Streaming path: display text deltas in real-time, extract final response
-  response=""
-  stream_text=""
-  non_sse_body=""
-  declare -A _fc_names=() _fc_ids=() _fc_args=()
-  while IFS= read -r line || [[ -n "${line}" ]]; do
-    if [[ "${line}" != data:* ]]; then
-      [[ -n "${line}" ]] && non_sse_body+="${line}"$'\n'
-      continue
-    fi
-    data="${line#data: }"
-    type="$(echo "${data}" | jq -r '.type // empty' 2>/dev/null)" || continue
-    case "${type}" in
-      response.output_text.delta)
-        delta="$(echo "${data}" | jq -j '.delta // empty'; printf x)"
-        delta="${delta%x}"
-        stream_text+="${delta}"
-        [[ -n "${delta}" && -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg t "${delta}" '{type:"text",text:$t}')" >> "${HARNESS_SESSION}/.stream"
-        ;;
-      response.output_item.added)
-        _item_type="$(echo "${data}" | jq -r '.item.type // empty')"
-        if [[ "${_item_type}" == "function_call" ]]; then
-          _oi="$(echo "${data}" | jq -r '.output_index')"
-          _fc_names["${_oi}"]="$(echo "${data}" | jq -r '.item.name // empty')"
-          _fc_ids["${_oi}"]="$(echo "${data}" | jq -r '.item.call_id // empty')"
-        fi
-        ;;
-      response.function_call_arguments.done)
-        _oi="$(echo "${data}" | jq -r '.output_index')"
-        _args="$(echo "${data}" | jq -r '.arguments // "{}"')"
-        _fc_args["${_oi}"]="${_args}"
-        _parsed="$(echo "${_args}" | jq -c '.' 2>/dev/null || echo '{}')"
-        if [[ -n "${HARNESS_TOOL_FIFO:-}" ]]; then
-          jq -c -n --arg id "${_fc_ids[${_oi}]:-}" --arg name "${_fc_names[${_oi}]:-}" \
-            --argjson input "${_parsed}" \
-            '{id: $id, name: $name, input: $input}' > "${HARNESS_TOOL_FIFO}"
-        fi
-        [[ -n "${HARNESS_SESSION:-}" ]] && printf '%s\n' "$(jq -c -n --arg id "${_fc_ids[${_oi}]:-}" --arg name "${_fc_names[${_oi}]:-}" --argjson input "${_parsed}" '{type:"tool_start",id:$id,name:$name,input:$input}')" >> "${HARNESS_SESSION}/.stream"
-        ;;
-      response.completed)
-        response="$(echo "${data}" | jq -c '.response')"
-        ;;
-    esac
-  done < <(echo "${request}" | curl -sS -N "https://chatgpt.com/backend-api/codex/responses" \
-    -H "Authorization: Bearer ${access_token}" \
-    -H "ChatGPT-Account-ID: ${account_id}" \
-    -H "Content-Type: application/json" \
-    -d @- \
-    --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-    --max-time 300
-  )
-
-  if [[ -z "${response}" ]]; then
-    err_msg="$(printf '%s' "${non_sse_body}" | jq -r '.error.message // .detail // empty' 2>/dev/null)"
-    if [[ -n "${err_msg}" ]]; then
-      err_resets="$(printf '%s' "${non_sse_body}" | jq -r '.error.resets_in_seconds // empty' 2>/dev/null)"
-      [[ -n "${err_resets}" ]] && err_msg+=" (resets in ${err_resets}s)"
-      echo "chatgpt API error: ${err_msg}" >&2
-    else
-      echo "no response.completed event in stream" >&2
-      [[ -n "${non_sse_body}" ]] && { _bd="${non_sse_body%$'\n'}"; echo "body: ${_bd:0:500}" >&2; }
-    fi
-    exit 1
-  fi
-
-  stream_output="[]"
-  if [[ -n "${stream_text}" ]]; then
-    stream_output="$(printf '%s' "${stream_text}" | jq -Rs \
-      '[{type: "message", role: "assistant", content: [{type: "output_text", text: .}]}]')"
-  fi
-
-  if [[ ${#_fc_ids[@]} -gt 0 ]]; then
-    for _oi in $(echo "${!_fc_ids[@]}" | tr ' ' '\n' | sort -n); do
-      _stream_args="${_fc_args[${_oi}]:-}"
-      [[ -n "${_stream_args}" ]] || _stream_args='{}'
-      stream_output="$(echo "${stream_output}" | jq -c \
-        --arg id "${_fc_ids[${_oi}]}" \
-        --arg name "${_fc_names[${_oi}]}" \
-        --arg arguments "${_stream_args}" \
-        '. + [{type: "function_call", call_id: $id, name: $name, arguments: $arguments}]'
-      )"
-    done
-  fi
-
-  if [[ "$(echo "${stream_output}" | jq 'length')" -gt 0 ]]; then
-    response="$(printf '%s\n%s' "${response}" "${stream_output}" | jq -c -s '
-      .[0] as $response
-      | .[1] as $stream_output
-      | ($response.output // []) as $existing
-      | ($existing | map(select(.type == "function_call")) | map(.call_id)) as $existing_call_ids
-      | ($existing | map(.type == "message") | any) as $has_message
-      | ($stream_output
-          | map(
-              if .type == "message" then
-                select($has_message | not)
-              elif .type == "function_call" then
-                select((.call_id as $id | $existing_call_ids | index($id)) | not)
-              else
-                empty
-              end
-            )
-        ) as $missing
-      | if ($existing | length) == 0 then
-          $response + {output: $stream_output}
-        elif ($missing | length) > 0 then
-          $response + {output: ($existing + $missing)}
-        else
-          $response
-        end'
-    )"
-  fi
-
-  echo "${response}"
-  exit 0
-fi
-
-# Non-streaming path: buffer all SSE output and extract final response
-# --speed-limit 1 --speed-time 60: abort a stalled transfer in ~60s rather
-# than the full --max-time 300. A genuinely stalled connection (the real
-# failure mode — TCP open, zero bytes) aborts here; legitimate streams emit
-# pings/keepalives even during long reasoning, so 60s does not false-trip.
-sse_output="$(echo "${request}" | curl -sS "https://chatgpt.com/backend-api/codex/responses" \
-  -H "Authorization: Bearer ${access_token}" \
-  -H "ChatGPT-Account-ID: ${account_id}" \
-  -H "Content-Type: application/json" \
-  -d @- \
-  --speed-limit 1 --speed-time ${HARNESS_CURL_SPEED_TIME:-60} \
-  --max-time 300
-)"
-
-# Check for non-SSE error responses (plain JSON)
-if echo "${sse_output}" | jq -e '.error // .detail' &>/dev/null 2>&1; then
-  error_msg="$(echo "${sse_output}" | jq -r '.error.message // .detail // "unknown error"' 2>/dev/null)"
-  echo "chatgpt API error: ${error_msg}" >&2
-  exit 1
-fi
-
-# Parse SSE: extract the response object from the response.completed event
-response="$(echo "${sse_output}" | grep '^data: ' | sed 's/^data: //' | \
-  jq -c 'select(.type == "response.completed") | .response' 2>/dev/null | tail -1)"
-
-if [[ -z "${response}" ]]; then
-  echo "no response.completed event in stream" >&2
-  exit 1
-fi
-
-echo "${response}"
+# This endpoint requires SSE. Buffer it privately: no session file or tool dispatch.
+sse_output="$(printf '%s' "${request}" | curl -sS "${CHATGPT_API_URL:-https://chatgpt.com/backend-api/codex/responses}" \
+  -H "Authorization: Bearer ${access_token}" -H "ChatGPT-Account-ID: ${account_id}" \
+  -H 'Content-Type: application/json' -d @- \
+  --speed-limit 1 --speed-time "${HARNESS_CURL_SPEED_TIME:-60}" --max-time "${HARNESS_CURL_MAX_TIME:-5400}")" || { echo 'ChatGPT request failed' >&2; exit 1; }
+# SSE record framing is text; all event JSON and response parsing goes through jq.
+events="$(printf '%s\n' "${sse_output}" | awk '
+  function emit() {if (data != "") print data; data=""}
+  {sub(/\r$/, "")}
+  /^$/ {emit(); next}
+  /^data:/ {sub(/^data:[ ]?/, ""); if ($0 != "[DONE]") data=data (data=="" ? "" : "\n") $0}
+  END {emit()}
+  ' | jq -cs '.' 2>/dev/null)" || { echo 'ChatGPT returned malformed SSE' >&2; exit 1; }
+response="$(printf '%s' "${events}" | jq -ce '
+  if any(.[]; .type == "error" or .type == "response.failed") then error("API error") else . end
+  | [.[] | select(.type == "response.completed" or .type == "response.incomplete") | .response] as $final
+  | if ($final | length) != 1 then error("missing or duplicate terminal response") else . end
+  | [.[] | select(.type == "response.output_item.done") | {index:.output_index,item:.item}] | sort_by(.index) | map(.item) as $done
+  | $final[0]
+  | if (.output // [] | length) < ($done | length) then .output=$done else . end
+  ' 2>/dev/null)" || { echo 'ChatGPT API returned an error or incomplete SSE response' >&2; exit 1; }
+normalized="$(printf '%s' "${response}" | jq -ce '
+  if .error != null or (.output | type) != "array" then error("invalid output") else . end
+  | if .status == "completed" then .
+    elif .status == "incomplete" and .incomplete_details.reason == "max_output_tokens" then .
+    else error("missing or unsupported status") end
+  | . as $r
+  | [.output[] | if .type == "message" and .role == "assistant" then .content[] |
+      if .type == "output_text" then {type:"text",text:.text}
+      elif .type == "refusal" then {type:"text",text:.refusal}
+      else error("unsupported message content") end
+    elif .type == "function_call" then
+      {type:"tool_call",id:.call_id,name:.name,input:(.arguments|fromjson)}
+    elif .type == "reasoning" then empty
+    else error("unsupported output item") end] as $blocks
+  | {blocks:$blocks,
+    stop:(if .status == "incomplete" then "length"
+      elif any($blocks[]; .type == "tool_call") then "tool_calls" else "end" end),
+    usage:{input_tokens:(.usage.input_tokens // 0),output_tokens:(.usage.output_tokens // 0),
+      total_tokens:(.usage.total_tokens // ((.usage.input_tokens // 0)+(.usage.output_tokens // 0))),
+      cache_read_input_tokens:(.usage.input_tokens_details.cached_tokens // 0),cache_creation_input_tokens:0},
+    provider_state:{protocol:"chatgpt",output:$r.output}}
+  ' 2>/dev/null)" || { echo 'ChatGPT API returned malformed output or tool arguments' >&2; exit 1; }
+printf '%s' "${normalized}" | _provider_validate_response

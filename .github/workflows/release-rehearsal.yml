@@ -35,7 +35,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - name: Install dependencies
-        run: pacman -Syu --noconfirm base-devel bash curl git openssh jq pacman-contrib
+        run: pacman -Syu --noconfirm base-devel bash curl git openssh jq pacman-contrib socat util-linux coreutils
 
       - name: Set rehearsal values
         id: vars

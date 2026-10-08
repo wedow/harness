@@ -6,7 +6,7 @@ tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 mkdir -p "${tmp}/root/lib" "${tmp}/root/plugins"
 ln -s "${root}/plugins/web" "${tmp}/root/plugins/web"
-export HARNESS_ROOT="${tmp}/root" HARNESS_DATA="${tmp}/chat"
+export HARNESS_ROOT="${tmp}/root" HARNESS_HOME="${tmp}/home" HARNESS_DATA="${tmp}/chat"
 cat > "${tmp}/root/lib/bootstrap.sh" <<'MOCK'
 export HARNESS_DATA
 MOCK
@@ -112,6 +112,50 @@ export HARNESS_WEB_ALLOWED_HOSTS=proxy.internal:8080
 request POST /api/messages '{"text":"host","id":"host"}' proxy.internal:8080 http://proxy.internal:8080
 expect_status 200
 unset HARNESS_WEB_ALLOWED_HOSTS
+
+# Saved proxy settings survive a plain start and reload for each HTTP request.
+mkdir -p "${HARNESS_HOME}"
+access_config="${HARNESS_HOME}/web.conf"
+printf '%s\n' 'allowed_origins=https://node.example-tailnet.ts.net, https://second.example:444' > "${access_config}"
+printf '%s' 'allowed_hosts=proxy.internal:8080' >> "${access_config}"
+request GET / '' node.example-tailnet.ts.net
+expect_status 200
+request POST /api/messages '{"text":"saved origin","id":"saved-origin"}' node.example-tailnet.ts.net https://node.example-tailnet.ts.net
+expect_status 200
+request POST /api/messages '{"text":"rewritten host","id":"rewritten-host"}' 127.0.0.1:8080 https://node.example-tailnet.ts.net
+expect_status 200
+request POST /api/messages '{"text":"saved host","id":"saved-host"}' proxy.internal:8080 http://proxy.internal:8080
+expect_status 200
+request POST /api/messages '{"text":"another origin","id":"another-origin"}' second.example:444 https://second.example:444
+expect_status 200
+request POST /api/messages '{"text":"no","id":"saved-foreign"}' node.example-tailnet.ts.net https://evil.example
+expect_status 403
+[[ ! -f "${HARNESS_DATA}/submitted/saved-foreign" ]]
+for host in other.example-tailnet.ts.net node.example-tailnet.ts.net.evil.example; do
+  request GET / '' "${host}"; expect_status 403
+done
+export HARNESS_WEB_ALLOWED_ORIGINS=https://override.example
+request GET / '' node.example-tailnet.ts.net
+expect_status 403
+request GET / '' override.example
+expect_status 200
+export HARNESS_WEB_ALLOWED_ORIGINS=''
+request GET / '' node.example-tailnet.ts.net
+expect_status 403
+unset HARNESS_WEB_ALLOWED_ORIGINS
+export HARNESS_WEB_ALLOWED_HOSTS=other.internal:8080
+request GET / '' proxy.internal:8080
+expect_status 403
+unset HARNESS_WEB_ALLOWED_HOSTS
+printf '%s\n' 'allowed_origins=https://changed.example' > "${access_config}"
+access_marker="${tmp}/access-config-executed"
+printf 'ignored=$(touch %s)\n' "${access_marker}" >> "${access_config}"
+request GET / '' node.example-tailnet.ts.net
+expect_status 403
+request GET / '' changed.example
+expect_status 200
+[[ ! -e "${access_marker}" ]]
+rm "${access_config}"
 
 printf '%s\r\n' 'POST /api/messages HTTP/1.1' 'Host: localhost:8080' 'Content-Length: 1048577' '' | "${handler}" > "${response}"
 expect_status 413

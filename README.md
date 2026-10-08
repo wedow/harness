@@ -188,8 +188,11 @@ harness restart web
 ```
 
 `HARNESS_WEB_ALLOWED_HOSTS` permits additional exact proxy Host values. The
-listener stays on loopback. See [plugins/web/README.md](plugins/web/README.md)
-for the HTTP endpoints and proxy rules.
+listener stays on loopback. To preserve this configuration across plain starts,
+save `allowed_origins=https://agent.example-tailnet.ts.net` in
+`~/.harness/web.conf` (or `$HARNESS_HOME/web.conf`); saved settings reload on each
+request. See [plugins/web/README.md](plugins/web/README.md) for the HTTP endpoints
+and proxy rules.
 
 ## Verify
 

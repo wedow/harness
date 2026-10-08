@@ -45,3 +45,22 @@ with `HARNESS_WEB_ALLOWED_HOSTS=proxy.internal:8080`. Both variables accept
 comma- or space-separated entries. Origins include the scheme and port;
 Hosts include any port. Wildcards are not supported. Restart the HTTP
 server after changing these settings.
+
+For settings that survive a plain start, create `$HARNESS_HOME/web.conf`
+(`~/.harness/web.conf` by default):
+
+```ini
+allowed_origins=https://agent.example-tailnet.ts.net
+```
+
+`allowed_hosts` accepts the same exact Host list as the environment setting.
+Environment variables override their corresponding saved setting, including an
+explicitly empty value. The file contains literal `key=value` lines and is never
+executed. Saved settings reload on each request, so editing the file needs no
+web restart.
+
+For [Tailscale Serve](https://tailscale.com/docs/reference/tailscale-cli/serve),
+run `tailscale serve status` to find the HTTPS URL, then save that exact origin
+under `allowed_origins`. `tailscale serve 8080` alone does not configure the
+Harness allowlist. A `forbidden host` response means the request reached Harness
+but its hostname has not been allowed.

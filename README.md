@@ -200,5 +200,6 @@ SPEC_DIR=spec bash spec/tests/NAME/test.sh
 
 Tests use temporary stores and mock providers. The web test also exercises the
 browser client when Node is available; Node is not a runtime dependency.
+For an opt-in synthetic live check, see [provider diagnostics](docs/PROVIDER_CHECK.md).
 
 MIT — see [LICENSE](LICENSE).

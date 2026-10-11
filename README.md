@@ -95,7 +95,7 @@ rather than automatically executed again.
 
 ## Memory
 
-The memory layout follows the [UniiChat design](https://gist.githubusercontent.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449/raw/3c190e06f34aba0c69f49042c526093269604935/optchat.md).
+The memory layout follows the [UniiChat design](docs/optchat.md), vendored verbatim from the gist's optchat.md at revision 3c190e06; see the [upstream gist](https://gist.github.com/VictorTaelin/91837951a5ce5b38f341ec1ba1df6449) for later revisions.
 
 Each actor has an append-only message log and binary tree. Leaves summarize one
 message; a parent summarizes two adjacent siblings. Nodes target 512 UTF-8

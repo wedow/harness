@@ -76,9 +76,10 @@ outcome rather than blindly replaying it.
 
 A fresh turn uses the saved memory prefix plus the chronological original actor
 messages since the first pending input, including interleaved replies and tool
-launches. In-turn provider/tool messages remain separate protocol state. Preserve
-tool-call/result identities and observation provenance; synthetic control
-messages are not user orders.
+launches. A turn stays anchored on the message that opened it across tool
+rounds and output continuations. In-turn provider/tool messages remain
+separate protocol state. Preserve tool-call/result identities and observation
+provenance; synthetic control messages are not user orders.
 
 ## Memory invariants
 

@@ -180,6 +180,7 @@ See [docs/PROTOCOLS.md](docs/PROTOCOLS.md) and
 | `HARNESS_SUMMARY_MODEL` | turn model, or the selected summary provider's default | Model for summaries |
 | `MEMORY_VIEW_HIGH` / `MEMORY_VIEW_LOW` | `128000` / `64000` | Turn-view byte budgets |
 | `MEMORY_COMPACT_HIGH` / `MEMORY_COMPACT_LOW` | `32000` / `16000` | Compaction-view byte budgets |
+| `HARNESS_TURN_MAX_BYTES` | `0` (off) | Byte cap on an assembled turn request; an anchored turn that outgrows it re-anchors on the oldest pending input, and a turn that still exceeds it fails |
 
 To serve through a trusted reverse proxy, configure the exact public origin:
 

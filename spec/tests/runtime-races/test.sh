@@ -68,8 +68,9 @@ assert_no_jobs() {
   assert_eq "$1: no executable job is queued" "$(find "${HARNESS_DATA}/queue/jobs" -type f | wc -l | tr -d ' ')" 0
 }
 
-# A launch ends the turn. Calling the model merely to narrate a receipt can
-# produce a stale "still running" reply after a fast tool has already finished.
+# A launch suspends the anchored turn. Calling the model merely to narrate a
+# receipt can produce a stale "still running" reply after a fast tool has
+# already finished, so nothing is scheduled until input or a result arrives.
 reset_store tool-turn
 start_turn
 request="$(state_actor main | jq -r '.request')"
@@ -78,7 +79,7 @@ apply request.completed main "$(jq -cn --arg id "${request}" \
 while IFS= read -r event; do runtime_apply_event "${event}"; done < <(
   jq -c 'select(.kind=="tool" or .kind=="job.queued")' "${HARNESS_DATA}/events/"*.json
 )
-assert_state '.actors.main.request==null and .actors.main.followup==false and (.actors.main.pending_jobs|length)==1' 'a launched tool waits for actual input, not receipt narration'
+assert_state '.actors.main.request==null and .actors.main.followup==false and .actors.main.turn!=null and ((.actors.main.ledger|length)>=2) and ((.actors.main.pending_jobs|length)==1)' 'a launched tool suspends the anchored turn without fresh input'
 schedule_turn main
 assert_eq 'no inference is scheduled just to acknowledge launch' "$(jq -s '[.[]|select(.kind=="request.queued")]|length' "${HARNESS_DATA}/events/"*.json)" 1
 job="$(state_actor main | jq -r '.pending_jobs[0]')"
@@ -88,7 +89,9 @@ runtime_apply_event "${observation}"
 schedule_turn main
 next_request="$(latest_request)"
 printf '%s' "${next_request}" | jq -e '.data.payload.messages[-1].content | contains("fast result")' >/dev/null
-assert_eq 'completion starts a fresh turn' "$(printf '%s' "${next_request}" | jq -r '.data.turn')" "$(printf '%s' "${observation}" | jq -r '.seq')"
+printf '%s' "${next_request}" | jq -e '.data.payload.messages | any(.[]; .role=="tool" and .call_id=="fast-call")' >/dev/null
+anchor_seq="$(jq -sc '[.[]|select(.kind=="message" and .data.kind=="user")]|first|.seq' "${HARNESS_DATA}/events/"*.json)"
+assert_eq 'the result continues the anchored turn' "$(printf '%s' "${next_request}" | jq -r '.data.turn')" "${anchor_seq}"
 assert_eq 'only the launch and result calls are needed' "$(jq -s '[.[]|select(.kind=="request.queued")]|length' "${HARNESS_DATA}/events/"*.json)" 2
 
 # Truncation still resumes the exact response instead of waiting for input.
@@ -102,7 +105,8 @@ printf '%s' "$(latest_request)" | jq -e '.data.payload.messages[-1].content=="Co
 assert_eq 'an output limit still queues a continuation' "$(jq -s '[.[]|select(.kind=="request.queued")]|length' "${HARNESS_DATA}/events/"*.json)" 2
 
 # Steering can be committed before the active call publishes its reply and
-# tools. The next fresh turn must see that interleaved history as well as input.
+# tools. The resumed turn keeps the interleaved reply as protocol history and
+# appends the steering message after the tool receipt.
 reset_store in-flight-input
 start_turn
 request="$(state_actor main | jq -r '.request')"
@@ -117,9 +121,12 @@ next_request="$(latest_request)"
 printf '%s' "${next_request}" | jq -e '
   .data.payload.messages as $messages |
   ([$messages[] | select(.role=="user" and .content=="steering during the call")]|length)==1 and
-  any($messages[]; (.content // "" | contains("Completed earlier reply"))) and
-  any($messages[]; (.content // "" | contains("interleaved-call"))) and
-  all($messages[]; .role=="user")' >/dev/null
+  any($messages[]; .role=="assistant" and any(.blocks[]?; .type=="text" and (.text|contains("Completed earlier reply")))) and
+  any($messages[]; .role=="tool" and .call_id=="interleaved-call") and
+  ([$messages[] | .role])==["user","user","assistant","tool","user"] and
+  $messages[-1].content=="steering during the call"' >/dev/null
+steering_anchor="$(jq -sc '[.[]|select(.kind=="message" and .data.kind=="user")]|first|.seq' "${HARNESS_DATA}/events/"*.json)"
+assert_eq 'steering keeps the anchored turn' "$(printf '%s' "${next_request}" | jq -r '.data.turn')" "${steering_anchor}"
 
 # A completion publishes derived events after cancellation was already committed.
 # New user input can make the actor ready before the old job event is projected.
@@ -284,5 +291,48 @@ assert_eq 'published digest matches the retried copy' "${next_code##*/}" "$(code
 assert_eq 'earlier requests retain their original code' "$(cat "${first_code}/lib/version.sh")" version=first
 assert_eq 'earlier provider remains pinned' "$(printf '{}' | "${first_code}/plugins/fixture/providers/fixture-snapshot" | jq -r '.blocks[0].text')" first
 assert_eq 'new work can use the updated provider' "$(printf '{}' | "${next_code}/plugins/fixture/providers/fixture-snapshot" | jq -r '.blocks[0].text')" third
+
+# A fresh turn that cannot fit inside HARNESS_TURN_MAX_BYTES fails the actor
+# instead of queueing a request no provider could serve.
+reset_store turn-cap-fresh
+export HARNESS_TURN_MAX_BYTES=1000
+oversized_text="$(jq -nr '"task detail " * 400')"
+apply message main "$(printf '%s' "${oversized_text}" | jq -Rs '{kind:"user",text:.}')" oversized-input
+schedule_turn main
+assert_state '.actors.main.request==null and .actors.main.status=="error" and .actors.main.turn==null and ((.actors.main.ledger|length)==0) and .actors.main.inbox==[]' 'an unfittable fresh turn fails the actor without queueing a request'
+assert_eq 'nothing oversized is queued' "$(jq -s '[.[]|select(.kind=="request.queued")]|length' "${HARNESS_DATA}/events/"*.json)" 0
+assert_eq 'no executable request is queued' "$(find "${HARNESS_DATA}/queue/requests" -type f | wc -l | tr -d ' ')" 0
+jq -se 'any(.[]; .kind=="error" and (.data.text|contains("turn exceeds HARNESS_TURN_MAX_BYTES")))' "${HARNESS_DATA}/events/"*.json >/dev/null
+
+# An anchored ledger that outgrows the cap mid-turn drops the inflated protocol
+# state and re-anchors on the oldest pending input; the work survives as history.
+reset_store turn-cap-anchored
+export HARNESS_TURN_MAX_BYTES=60000
+start_turn
+request="$(state_actor main | jq -r '.request')"
+big_state=$(jq -nr '"protocol state " * 6000')
+apply request.completed main "$(jq -cn --arg id "${request}" --arg state "${big_state}" \
+  '{id:$id,response:{blocks:[{type:"tool_call",id:"cap-call",name:"bash",input:{command:"printf capped"}}],stop:"tool_calls",provider_state:{state:$state},usage:{}}}')" completed-cap-tool
+while IFS= read -r event; do runtime_apply_event "${event}"; done < <(
+  jq -c 'select(.kind=="tool" or .kind=="job.queued")' "${HARNESS_DATA}/events/"*.json
+)
+job="$(state_actor main | jq -r '.pending_jobs[0]')"
+apply job.completed main "$(jq -cn --arg id "${job}" '{id:$id,result:"capped result",error:false}')" completed-cap-job
+observation="$(jq -sc '[.[]|select(.kind=="message" and .data.kind=="echo")]|last' "${HARNESS_DATA}/events/"*.json)"
+runtime_apply_event "${observation}"
+schedule_turn main
+next_request="$(latest_request)"
+[[ "${next_request}" != null ]]
+echo_seq="$(printf '%s' "${observation}" | jq -r '.seq')"
+assert_eq 'an oversized anchored ledger re-anchors on the oldest pending input' "$(printf '%s' "${next_request}" | jq -r '.data.turn')" "${echo_seq}"
+printf '%s' "${next_request}" | jq -e '.data.payload.messages[-1].content | contains("capped result")' >/dev/null
+printf '%s' "${next_request}" | jq -e '([.data.payload.messages[] | select(.role=="tool" and .call_id=="cap-call")]|length)==0' >/dev/null
+[[ "$(printf '%s' "${next_request}" | wc -c)" -lt 60000 ]]
+assert_eq 'only the original and re-anchored requests are queued' "$(jq -s '[.[]|select(.kind=="request.queued")]|length' "${HARNESS_DATA}/events/"*.json)" 2
+jq -se 'any(.[]; .kind=="error")|not' "${HARNESS_DATA}/events/"*.json >/dev/null
+runtime_apply_event "${next_request}"
+assert_eq 'the re-anchored turn runs anchored on the observation' "$(state_actor main | jq -r '.turn')" "${echo_seq}"
+assert_state '.actors.main.request!=null and .actors.main.status=="running"' 'the re-anchored request is applied'
+unset HARNESS_TURN_MAX_BYTES
 
 printf 'PASS: asynchronous turn boundaries, cancellation generations, delayed observations, configuration, and hot snapshots\n'

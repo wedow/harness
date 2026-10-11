@@ -8,8 +8,10 @@ and this project adheres to Semantic Versioning.
 ## [Unreleased]
 
 ### Added
+- `HARNESS_TURN_MAX_BYTES` optional byte cap on an assembled turn request. An anchored turn that outgrows the cap re-anchors on the oldest pending inbox message and rebuilds from saved memory; a turn that still cannot fit one request fails the actor instead of sending it.
 
 ### Changed
+- Tool-call replies now suspend the turn instead of ending it: tool results and steering resume the same request ledger anchored on the message that opened the turn, rather than starting a fresh turn from the memory view.
 
 ### Fixed
 

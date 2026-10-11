@@ -62,13 +62,16 @@ runtime_response() {
     fi
     ledger="$(printf '%s' "${ledger}" | jq -c '.+[{role:"user",content:"Continue the truncated response from where it ended. Do not repeat completed work."}]')"
   fi
-  local followup=false
+  local followup=false sticky=false
   # Queuing a job is not new input. Resume when its result (or user input)
   # arrives, rather than asking the model to narrate a potentially stale receipt.
+  # Tool rounds keep the turn anchored on its user message: the ledger keeps
+  # the tool_use blocks and receipts so results continue the same turn.
   [[ "${stop}" == length ]] && followup=true
+  [[ "${stop}" == tool_calls ]] && sticky=true
   printf '%s' "${ledger}" > "${HARNESS_DATA}/requests/${id}/ledger.json"
   printf '%s' "${text}" > "${HARNESS_DATA}/requests/${id}/text"
-  state_update '.actors[$a].request=null | .actors[$a].ledger=$ledger[0] | .actors[$a].followup=$followup | .actors[$a].length_count=$length | .actors[$a].last_reply=$text | .actors[$a].status=(if $followup then "ready" else "idle" end) | if $followup then . else .actors[$a].ledger=[] | .actors[$a].turn=null end | del(.requests[$id])' --arg a "${actor}" --arg id "${id}" --slurpfile ledger "${HARNESS_DATA}/requests/${id}/ledger.json" --argjson followup "${followup}" --argjson length "${length_count}" --rawfile text "${HARNESS_DATA}/requests/${id}/text"
+  state_update '.actors[$a].request=null | .actors[$a].ledger=$ledger[0] | .actors[$a].followup=$followup | .actors[$a].length_count=$length | .actors[$a].last_reply=$text | .actors[$a].status=(if $followup then "ready" else "idle" end) | if ($followup or $sticky) then . else .actors[$a].ledger=[] | .actors[$a].turn=null end | del(.requests[$id])' --arg a "${actor}" --arg id "${id}" --slurpfile ledger "${HARNESS_DATA}/requests/${id}/ledger.json" --argjson followup "${followup}" --argjson sticky "${sticky}" --argjson length "${length_count}" --rawfile text "${HARNESS_DATA}/requests/${id}/text"
 }
 
 runtime_fail_actor() {
@@ -203,7 +206,7 @@ runtime_recent_messages() {
 }
 
 runtime_schedule_actor() {
-  local actor="$1" state inbox seq first last ledger view recent system tools config round epoch id record payload bins='{}' name binary
+  local actor="$1" state inbox seq first last ledger view recent system tools config round epoch id record payload bins='{}' name binary budget bytes
   state="$(state_actor "${actor}")"
   [[ "$(printf '%s' "${state}" | jq -r '.request')" == null ]] || return 0
   inbox="$(printf '%s' "${state}" | jq -c '.inbox')"
@@ -216,7 +219,7 @@ runtime_schedule_actor() {
   config="$(provider_resolve "${HARNESS_PROVIDER}" "${HARNESS_MODEL}" 2>"${HARNESS_DATA}/setup-error")" || { runtime_fail_actor "${actor}" "${id}" "$(cat "${HARNESS_DATA}/setup-error")"; state_update '.actors[$a].inbox=[] | .actors[$a].round=$round' --arg a "${actor}" --argjson round "${round}"; return 0; }
   tools="$(harness_tools)" || return 1
   system="$(harness_system)" || return 1
-  if [[ "$(printf '%s' "${state}" | jq -r '.followup // false')" == true ]]; then
+  if [[ "$(printf '%s' "${state}" | jq -r '(.followup // false) or (.turn != null)')" == true ]]; then
     ledger="$(printf '%s' "${state}" | jq -c '.ledger')"
     first="$(printf '%s' "${state}" | jq -r '.turn')"
   else
@@ -240,7 +243,7 @@ runtime_schedule_actor() {
     ledger="$(printf '%s\n%s' "${ledger}" "${recent}" | jq -cs '.[0]+.[1]')"
   fi
   last="$(printf '%s' "${inbox}" | jq -r '.[-1] // 0')"
-  if [[ "$(printf '%s' "${state}" | jq -r '.followup // false')" == true ]]; then
+  if [[ "$(printf '%s' "${state}" | jq -r '(.followup // false) or (.turn != null)')" == true ]]; then
     while IFS= read -r seq; do
       [[ -n "${seq}" ]] || continue
       local incoming
@@ -253,6 +256,24 @@ runtime_schedule_actor() {
     bins="$(printf '%s' "${bins}" | jq -c --arg n "${name}" --arg b "${binary}" '.[$n]=$b')"
   done < <(printf '%s' "${tools}" | jq -r '.[].name')
   payload="$(printf '%s\n%s\n%s' "$(printf '%s' "${system}" | jq -Rs .)" "${ledger}" "${tools}" | jq -cs --arg model "$(printf '%s' "${config}" | jq -r '.model')" '{model:$model,system:.[0],messages:.[1],tools:.[2]}')"
+  # HARNESS_TURN_MAX_BYTES optionally caps the assembled request payload in
+  # bytes. An anchored ledger that outgrew the cap re-anchors on the oldest
+  # unprocessed inbox message and rebuilds from saved memory; a fresh turn
+  # that still exceeds the cap fails instead of sending an unusable request.
+  budget="${HARNESS_TURN_MAX_BYTES:-0}"
+  [[ "${budget}" =~ ^[0-9]+$ ]] || budget=0
+  if (( budget > 0 )); then
+    bytes="$(printf '%s' "${payload}" | wc -c)"
+    if (( bytes > budget )); then
+      if [[ "$(printf '%s' "${state}" | jq -r '(.followup // false) or (.turn != null)')" == true && "${inbox}" != '[]' ]]; then
+        state_update '.actors[$a].followup=false | .actors[$a].turn=null | .actors[$a].ledger=[]' --arg a "${actor}"
+        if runtime_schedule_actor "${actor}"; then return 0; else return $?; fi
+      fi
+      runtime_fail_actor "${actor}" "${id}" "turn exceeds HARNESS_TURN_MAX_BYTES: request payload is ${bytes} bytes, cap is ${budget}; the pending input cannot fit one request"
+      state_update '.actors[$a].inbox=[] | .actors[$a].round=$round' --arg a "${actor}" --argjson round "${round}"
+      return 0
+    fi
+  fi
   record="$(printf '%s\n%s\n%s' "${payload}" "${config}" "${bins}" | jq -cs --arg id "${id}" --arg actor "${actor}" --arg code "${HARNESS_ROOT}" --argjson epoch "${epoch}" --argjson round "${round}" --argjson turn "${first}" --argjson wake "${last}" '{id:$id,actor:$actor,kind:"turn",code_root:$code,epoch:$epoch,payload:.[0],provider:.[1].provider,model:.[1].model,tool_bins:.[2],round:$round,turn:$turn,wake_seq:$wake}')"
   store_emit request.queued "${actor}" "${record}" "queued-${id}" >/dev/null
 }

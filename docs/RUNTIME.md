@@ -119,10 +119,19 @@ the saved view. Incoming messages appear once, with historical replies and tool
 launches marked as observations rather than native provider protocol messages.
 
 Only a response stopped by an output limit receives a bounded continuation
-nudge rather than being treated as complete. Its exact protocol ledger retains
-assistant blocks, tool-call IDs, launch receipts, provider continuation state,
-and steering that arrives between calls. Once the turn finishes, the ledger is
-cleared; a later user message or job observation starts from the memory view again.
+nudge rather than being treated as complete. A response that stops to launch
+tools suspends the turn instead of ending it: the exact protocol ledger —
+assistant blocks, tool-call IDs, launch receipts, provider continuation
+state, and steering that arrives between calls — is retained, and job results
+or later input resume the same anchored request. Once a turn finishes with a
+complete reply, the ledger is cleared; a later user message or job
+observation starts from the memory view again.
+
+`HARNESS_TURN_MAX_BYTES` optionally caps the assembled request payload in
+bytes. An anchored ledger that outgrew the cap re-anchors on the oldest
+pending inbox message and rebuilds from saved memory; a fresh turn that
+still exceeds the cap fails the actor instead of sending an unusable
+request.
 
 A child actor's first call also receives the parent's captured request context
 before its own memory view and task. Later child turns use the child's own saved
